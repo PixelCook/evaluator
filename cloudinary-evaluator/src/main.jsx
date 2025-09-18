@@ -9,12 +9,3 @@ createRoot(document.getElementById("root")).render(
 <App />
 </React.StrictMode>
 );
-
-
-# FILE: src/index.css
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-
-html, body, #root { height: 100%; }
