@@ -1,12 +1,37 @@
-# React + Vite
+# Cloudinary Evaluator
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Cloudinary Evaluator is a React + Vite tool that inspects a HAR file or pasted
+HTML to see how much of Cloudinary's optimization toolkit a site is using. It
+surfaces coverage metrics, a heuristic score, and actionable suggestions.
 
-Currently, two official plugins are available:
+## Prerequisites
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Node.js 18+ (https://nodejs.org)
+- npm 9+ (bundled with Node)
 
-## Expanding the ESLint configuration
+## Setup
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. Clone the repository and move into the project folder.
+   ```bash
+   git clone <your-fork-url>
+   cd cloudinary-evaluator
+   ```
+2. Install dependencies.
+   ```bash
+   npm install
+   ```
+
+## Running locally
+
+Start the Vite dev server:
+
+```bash
+npm run dev
+```
+
+The app is served at http://localhost:5173 and supports hot module reloading.
+
+## Production build & preview
+
+- Create an optimized build: `npm run build`
+- Preview the production build locally: `npm run preview`
