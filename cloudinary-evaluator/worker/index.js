@@ -38,6 +38,12 @@ export default {
     // Get the target URL from query parameter
     const url = new URL(request.url);
     const targetUrl = url.searchParams.get('url');
+    
+    console.log(`[Worker] Query string parsing:`, {
+      search: url.search,
+      searchParams: Object.fromEntries(url.searchParams.entries()),
+      targetUrl: targetUrl || 'NOT FOUND'
+    });
 
     // Handle root path requests
     if (url.pathname === '/' && !targetUrl) {

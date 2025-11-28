@@ -265,10 +265,16 @@ export default function App() {
       }
       
       // Construct the proxy URL - workerUrl is guaranteed to be a valid absolute URL at this point
-      const trimmedWorkerUrl = workerUrl.trim();
+      // Remove any trailing slashes to ensure clean URL construction
+      const trimmedWorkerUrl = workerUrl.trim().replace(/\/+$/, '');
       proxyUrl = `${trimmedWorkerUrl}?url=${encodeURIComponent(url)}`;
       
-      console.log('[App] Constructed proxy URL:', proxyUrl);
+      console.log('[App] Constructed proxy URL:', {
+        originalWorkerUrl: workerUrl,
+        trimmedWorkerUrl,
+        targetUrl: url,
+        finalProxyUrl: proxyUrl
+      });
       
       // Final validation: ensure proxyUrl is an absolute URL to prevent Vite from trying to serve it
       try {
