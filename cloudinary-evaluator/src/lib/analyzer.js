@@ -91,7 +91,6 @@ function finalizeAnalysis(result) {
   });
 
   const total = perAsset.length;
-  let score = 100;
   const suggestions = new Set();
 
   const autoFormatCount = perAsset.filter(a => a.cld.txSet.has("f_auto")).length;
@@ -99,17 +98,14 @@ function finalizeAnalysis(result) {
 
   if (total > 0) {
     if (autoFormatCount / total < 0.8) {
-      score -= 12;
-      suggestions.add("Adopt f_auto broadly (WebP/AVIF).");
+      suggestions.add("Adopt f_auto to serve modern formats automatically.");
     }
     if (autoQualityCount / total < 0.8) {
-      score -= 12;
       suggestions.add("Adopt q_auto for balanced quality vs bytes.");
     }
   }
 
   if (result.nonCloudinaryImages.length > 0) {
-    score -= 10;
     suggestions.add("Migrate non-Cloudinary images to leverage optimization & CDN.");
   }
 
@@ -119,8 +115,27 @@ function finalizeAnalysis(result) {
     if (cc && !/max-age=/.test(cc)) cacheFindings.push({ url: r.url, note: `Cache-Control suboptimal: ${cc}` });
   }
   if (cacheFindings.length) {
-    score -= 6;
     suggestions.add("Improve Cache-Control headers on versioned assets.");
+  }
+
+  // Simple score calculation: start at 100 and subtract points for issues
+  let score = 100;
+
+  if (total > 0) {
+    if (autoFormatCount / total < 0.8) {
+      score -= 12;
+    }
+    if (autoQualityCount / total < 0.8) {
+      score -= 12;
+    }
+  }
+
+  if (result.nonCloudinaryImages.length > 0) {
+    score -= 10;
+  }
+
+  if (cacheFindings.length) {
+    score -= 6;
   }
 
   score = Math.max(0, Math.min(100, score));

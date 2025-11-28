@@ -1,0 +1,10 @@
+name = "cloudinary-evaluator-proxy"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Uncomment and configure if you want to use a custom domain
+# [env.production]
+# routes = [
+#   { pattern = "proxy.yourdomain.com", custom_domain = true }
+# ]
+
