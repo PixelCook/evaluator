@@ -15,6 +15,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [expandedDetailsSection, setExpandedDetailsSection] = useState(false);
+  const [expandedNonCloudinarySection, setExpandedNonCloudinarySection] = useState(false);
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [sortColumn, setSortColumn] = useState(null);
   const [sortDirection, setSortDirection] = useState('asc'); // 'asc' or 'desc'
@@ -443,6 +444,7 @@ export default function App() {
     setStatus("");
     setError("");
     setExpandedDetailsSection(false);
+    setExpandedNonCloudinarySection(false);
     setExpandedRows(new Set());
     setSortColumn(null);
     setSortDirection('asc');
@@ -1051,6 +1053,73 @@ export default function App() {
                     <div className="text-2xl font-bold text-green-700">{correctUrls.length}</div>
                     <div className="text-slate-600">Correct</div>
                   </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {analysis && analysis.nonCloudinaryImages && analysis.nonCloudinaryImages.length > 0 && (
+        <section id="non-cloudinary-images" className="max-w-6xl mx-auto px-6">
+          <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
+            <div className="flex items-center justify-between mb-4">
+              <button
+                type="button"
+                onClick={() => setExpandedNonCloudinarySection(!expandedNonCloudinarySection)}
+                className="flex items-center gap-2 text-left font-semibold text-xl hover:text-blue-600"
+              >
+                <span className={`transition-transform ${expandedNonCloudinarySection ? 'rotate-90' : ''}`}>
+                  ▶
+                </span>
+                <span>
+                  Non-Cloudinary Images
+                  <span className="ml-2 text-base font-normal text-slate-500">
+                    ({analysis.nonCloudinaryImages.length} {analysis.nonCloudinaryImages.length === 1 ? 'image' : 'images'})
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const urls = analysis.nonCloudinaryImages.map(img => img.url).join("\n");
+                  const blob = new Blob([urls], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "non-cloudinary-images.txt";
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+                className="px-3 py-1 text-sm bg-slate-50 text-slate-700 rounded-lg hover:bg-slate-100 font-medium"
+              >
+                Export URLs
+              </button>
+            </div>
+
+            {expandedNonCloudinarySection && (
+              <div className="pt-4 border-t border-slate-200">
+                <p className="text-slate-600 mb-4">
+                  These images are not using Cloudinary. Consider migrating them to Cloudinary to leverage optimization, CDN delivery, and automatic format/quality optimization.
+                </p>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {analysis.nonCloudinaryImages.map((img, index) => (
+                    <div
+                      key={index}
+                      className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors"
+                    >
+                      <a
+                        href={img.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-700 break-all hover:underline font-mono text-sm"
+                      >
+                        {img.url}
+                      </a>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

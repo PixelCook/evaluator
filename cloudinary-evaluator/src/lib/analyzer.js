@@ -1,6 +1,16 @@
 const RESOURCE_TYPES = new Set(["image", "video"]);
 const DELIVERY_TYPES = new Set(["upload", "fetch", "private", "authenticated"]);
 
+// Cloudinary transformation parameter patterns (e.g., w_100, h_200, c_fill, f_auto, q_auto)
+const CLOUDINARY_TX_PATTERN = /[a-z]+_(?:auto|limit|fill|crop|scale|fit|pad|lfill|limit|mfit|mpad|thumb|imagga_crop|imagga_scale|imagga_pad|\d+)/i;
+
+function hasCloudinaryTransformations(segment) {
+  if (!segment) return false;
+  // Check if segment contains Cloudinary transformation patterns
+  // Examples: "w_144,c_limit", "f_auto,q_auto", "w_100,h_200,c_fill"
+  return CLOUDINARY_TX_PATTERN.test(segment) || /^[a-z]+_\d+/.test(segment);
+}
+
 function parseCloudinaryUrl(url) {
   let parsed;
   try {
@@ -12,6 +22,7 @@ function parseCloudinaryUrl(url) {
   const segments = parsed.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
   if (segments.length < 2) return null;
 
+  // First, try standard Cloudinary URL structure
   let idx = 0;
   let resourceType = segments[idx];
   let cloudName = "";
@@ -22,35 +33,72 @@ function parseCloudinaryUrl(url) {
     resourceType = segments[idx];
   }
 
-  if (!RESOURCE_TYPES.has(resourceType)) return null;
+  if (RESOURCE_TYPES.has(resourceType)) {
+    const deliveryType = segments[idx + 1];
+    if (DELIVERY_TYPES.has(deliveryType)) {
+      // Standard Cloudinary URL structure detected
+      const remainderSegments = segments.slice(idx + 2);
+      if (!remainderSegments.length) return null;
 
-  const deliveryType = segments[idx + 1];
-  if (!DELIVERY_TYPES.has(deliveryType)) return null;
+      const transformationSegments = [];
+      let stopIndex = remainderSegments.length;
 
-  const remainderSegments = segments.slice(idx + 2);
-  if (!remainderSegments.length) return null;
+      for (let i = 0; i < remainderSegments.length; i += 1) {
+        const segment = remainderSegments[i];
+        if (!segment) continue;
+        if (/^v\d+$/i.test(segment) || /\.[a-z0-9]+$/i.test(segment)) {
+          stopIndex = i;
+          break;
+        }
+        transformationSegments.push(segment);
+      }
 
-  const transformationSegments = [];
-  let stopIndex = remainderSegments.length;
+      const rawTransformations = transformationSegments.join("/");
+      const txSet = new Set(rawTransformations.split(",").filter(Boolean));
+      const publicId = remainderSegments.slice(stopIndex).join("/");
 
-  for (let i = 0; i < remainderSegments.length; i += 1) {
-    const segment = remainderSegments[i];
-    if (!segment) continue;
-    if (/^v\d+$/i.test(segment) || /\.[a-z0-9]+$/i.test(segment)) {
-      stopIndex = i;
-      break;
+      return {
+        cloudName: cloudName || parsed.hostname,
+        resourceType,
+        deliveryType,
+        publicId,
+        transformations: rawTransformations,
+        txSet,
+      };
     }
-    transformationSegments.push(segment);
   }
 
-  const rawTransformations = transformationSegments.join("/");
+  // Fallback: Detect Cloudinary URLs by transformation patterns (for CNAME scenarios)
+  // Look for segments containing Cloudinary transformation patterns
+  let transformationSegmentIndex = -1;
+  let transformationSegment = "";
+  
+  for (let i = 0; i < segments.length; i++) {
+    if (hasCloudinaryTransformations(segments[i])) {
+      transformationSegmentIndex = i;
+      transformationSegment = segments[i];
+      break;
+    }
+  }
+
+  if (transformationSegmentIndex === -1) return null;
+
+  // Extract transformations
+  const rawTransformations = transformationSegment;
   const txSet = new Set(rawTransformations.split(",").filter(Boolean));
-  const publicId = remainderSegments.slice(stopIndex).join("/");
+  
+  // Everything after the transformation segment is the publicId
+  const publicId = segments.slice(transformationSegmentIndex + 1).join("/");
+  
+  if (!publicId) return null;
+
+  // Try to infer resource type from file extension or default to "image"
+  const inferredResourceType = /\.(mp4|webm|mov|avi|wmv|flv|mkv)$/i.test(publicId) ? "video" : "image";
 
   return {
-    cloudName: cloudName || parsed.hostname,
-    resourceType,
-    deliveryType,
+    cloudName: parsed.hostname, // Use CNAME domain as cloudName
+    resourceType: inferredResourceType,
+    deliveryType: "upload", // Default assumption for CNAME URLs
     publicId,
     transformations: rawTransformations,
     txSet,
@@ -267,7 +315,10 @@ export function analyzeFromHar(harJson) {
     const url = e.request?.url || "";
     const mime = e.response?.content?.mimeType || "";
     const cld = parseCloudinaryUrl(url);
-    const isCloudinary = cld && hasCloudinaryResponseHeaders(e.response);
+    // Accept as Cloudinary if URL parses as Cloudinary
+    // For standard Cloudinary URLs, we also check headers for confirmation
+    // For CNAME URLs, we rely on transformation pattern detection
+    const isCloudinary = cld && (hasCloudinaryResponseHeaders(e.response) || cld.txSet.size > 0);
     if (isCloudinary) out.cloudinaryRequests.push({ url, response: e.response, cld });
     else if (/^image\//.test(mime) || /\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(url)) out.nonCloudinaryImages.push({ url });
   }
