@@ -76,6 +76,72 @@ function hasCloudinaryResponseHeaders(response = {}) {
   return false;
 }
 
+function extractDimensionsFromTransformations(txSet, transformations) {
+  let width = null;
+  let height = null;
+  
+  // Check for explicit width/height transformations
+  for (const tx of txSet) {
+    // w_1234 or w_1234:auto
+    const wMatch = tx.match(/^w_(\d+)/);
+    if (wMatch) width = parseInt(wMatch[1], 10);
+    
+    // h_1234 or h_1234:auto
+    const hMatch = tx.match(/^h_(\d+)/);
+    if (hMatch) height = parseInt(hMatch[1], 10);
+  }
+  
+  // Also check the raw transformations string for c_fill, c_crop with dimensions
+  if (transformations) {
+    const cFillMatch = transformations.match(/c_(?:fill|crop)(?:,w_(\d+))?(?:,h_(\d+))?/);
+    if (cFillMatch) {
+      if (cFillMatch[1] && !width) width = parseInt(cFillMatch[1], 10);
+      if (cFillMatch[2] && !height) height = parseInt(cFillMatch[2], 10);
+    }
+  }
+  
+  return { width, height };
+}
+
+function extractDisplayDimensions(element) {
+  let displayWidth = null;
+  let displayHeight = null;
+  
+  // Check width/height attributes
+  const attrWidth = element.getAttribute("width");
+  const attrHeight = element.getAttribute("height");
+  if (attrWidth) displayWidth = parseInt(attrWidth, 10);
+  if (attrHeight) displayHeight = parseInt(attrHeight, 10);
+  
+  // Check CSS styles (if available)
+  const style = element.getAttribute("style") || "";
+  const widthMatch = style.match(/width\s*:\s*(\d+)px/i);
+  const heightMatch = style.match(/height\s*:\s*(\d+)px/i);
+  if (widthMatch && !displayWidth) displayWidth = parseInt(widthMatch[1], 10);
+  if (heightMatch && !displayHeight) displayHeight = parseInt(heightMatch[1], 10);
+  
+  return { displayWidth, displayHeight };
+}
+
+function isOversized(actualWidth, actualHeight, displayWidth, displayHeight) {
+  // If we don't have display dimensions, we can't determine if it's oversized
+  if (!displayWidth && !displayHeight) return false;
+  
+  // If we have both dimensions, check if actual is significantly larger
+  if (actualWidth && actualHeight && displayWidth && displayHeight) {
+    const actualArea = actualWidth * actualHeight;
+    const displayArea = displayWidth * displayHeight;
+    // Consider oversized if actual is more than 2x the display area
+    return actualArea > displayArea * 2;
+  }
+  
+  // If we only have one dimension, check if it's significantly larger
+  if (actualWidth && displayWidth && actualWidth > displayWidth * 1.5) return true;
+  if (actualHeight && displayHeight && actualHeight > displayHeight * 1.5) return true;
+  
+  return false;
+}
+
 function finalizeAnalysis(result) {
   const perAsset = result.cloudinaryRequests.map(entry => {
     const cld = entry.cld || { txSet: new Set() };
@@ -87,7 +153,23 @@ function finalizeAnalysis(result) {
     if (!hasQAuto) {
       issues.push("Add q_auto to balance bytes vs quality.");
     }
-    return { url: entry.url, issues, cld };
+    
+    // Check for oversized assets
+    const dimensions = extractDimensionsFromTransformations(cld.txSet, cld.transformations);
+    const displayDims = entry.displayDimensions || {};
+    
+    // If we have display dimensions but no width/height transformations, suggest resizing
+    if ((displayDims.displayWidth || displayDims.displayHeight) && !dimensions.width && !dimensions.height) {
+      issues.push("Add width/height transformations to resize images to display dimensions and reduce file size.");
+    }
+    // If we have both actual and display dimensions and it's oversized
+    else if (dimensions.width && dimensions.height && displayDims.displayWidth && displayDims.displayHeight) {
+      if (isOversized(dimensions.width, dimensions.height, displayDims.displayWidth, displayDims.displayHeight)) {
+        issues.push(`Image is oversized (${dimensions.width}×${dimensions.height}px displayed as ${displayDims.displayWidth}×${displayDims.displayHeight}px). Crop and resize to match display dimensions.`);
+      }
+    }
+    
+    return { url: entry.url, issues, cld, dimensions, displayDimensions: displayDims };
   });
 
   const total = perAsset.length;
@@ -109,6 +191,15 @@ function finalizeAnalysis(result) {
     suggestions.add("Migrate non-Cloudinary images to leverage optimization & CDN.");
   }
 
+  // Check for oversized assets across all Cloudinary images
+  const oversizedAssets = perAsset.filter(a => {
+    return a.issues.some(issue => issue.includes("oversized") || issue.includes("resize"));
+  });
+  
+  if (oversizedAssets.length > 0) {
+    suggestions.add(`Resize ${oversizedAssets.length} oversized image${oversizedAssets.length > 1 ? 's' : ''} to match display dimensions and reduce bandwidth.`);
+  }
+
   const cacheFindings = [];
   for (const r of result.cloudinaryRequests) {
     const cc = r.response?.headers?.find?.(h => h.name?.toLowerCase() === "cache-control")?.value || "";
@@ -118,27 +209,40 @@ function finalizeAnalysis(result) {
     suggestions.add("Improve Cache-Control headers on versioned assets.");
   }
 
-  // Simple score calculation: start at 100 and subtract points for issues
-  let score = 100;
-
-  if (total > 0) {
-    if (autoFormatCount / total < 0.8) {
-      score -= 12;
-    }
-    if (autoQualityCount / total < 0.8) {
-      score -= 12;
-    }
+  // Calculate score based on Cloudinary usage and optimization
+  // If no Cloudinary assets, score is 0
+  let score = 0;
+  
+  const totalAssets = result.totalRequests;
+  const cloudinaryAssets = total;
+  const nonCloudinaryAssets = result.nonCloudinaryImages.length;
+  
+  // Count optimized Cloudinary assets (both f_auto and q_auto)
+  const optimizedAssets = perAsset.filter(a => {
+    const hasFAuto = a.cld.txSet.has("f_auto");
+    const hasQAuto = a.cld.txSet.has("q_auto") || [...a.cld.txSet].some(t => t.startsWith("q_auto:"));
+    return hasFAuto && hasQAuto;
+  }).length;
+  
+  if (cloudinaryAssets === 0) {
+    // No Cloudinary assets = 0 score
+    score = 0;
+  } else if (totalAssets === 0) {
+    // No assets at all = 0 score
+    score = 0;
+  } else {
+    // Score = (Cloudinary usage % * 50) + (Optimization % * 50)
+    // Cloudinary usage: percentage of total assets using Cloudinary
+    const cloudinaryUsagePercent = (cloudinaryAssets / totalAssets) * 100;
+    
+    // Optimization: percentage of Cloudinary assets that are fully optimized
+    const optimizationPercent = (optimizedAssets / cloudinaryAssets) * 100;
+    
+    // Weighted score: 50% for using Cloudinary, 50% for optimizing
+    score = (cloudinaryUsagePercent * 0.5) + (optimizationPercent * 0.5);
   }
-
-  if (result.nonCloudinaryImages.length > 0) {
-    score -= 10;
-  }
-
-  if (cacheFindings.length) {
-    score -= 6;
-  }
-
-  score = Math.max(0, Math.min(100, score));
+  
+  score = Math.max(0, Math.min(100, Math.round(score)));
 
   return {
     ...result,
@@ -181,8 +285,19 @@ export function analyzeFromHtml(html) {
     if (!raw) continue;
     const firstUrl = String(raw).split(/\s+/)[0];
     const cld = parseCloudinaryUrl(firstUrl);
-    if (cld) out.cloudinaryRequests.push({ url: firstUrl, cld });
-    else out.nonCloudinaryImages.push({ url: firstUrl });
+    
+    // Extract display dimensions from the element
+    const displayDims = extractDisplayDimensions(el);
+    
+    if (cld) {
+      out.cloudinaryRequests.push({ 
+        url: firstUrl, 
+        cld,
+        displayDimensions: displayDims
+      });
+    } else {
+      out.nonCloudinaryImages.push({ url: firstUrl });
+    }
   }
 
   return finalizeAnalysis(out);

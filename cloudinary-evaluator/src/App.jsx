@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import "./App.css";
 import Donut from "./components/Donut";
 import Pill from "./components/Pill";
@@ -10,7 +10,7 @@ export default function App() {
   const [htmlInput, setHtmlInput] = useState("");
   const [siteUrl, setSiteUrl] = useState("");
   const [deliveryUrl, setDeliveryUrl] = useState("");
-  const [activeTab, setActiveTab] = useState("har");
+  const [activeTab, setActiveTab] = useState("website");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -18,6 +18,54 @@ export default function App() {
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [sortColumn, setSortColumn] = useState(null);
   const [sortDirection, setSortDirection] = useState('asc'); // 'asc' or 'desc'
+
+  // Handle hash navigation to Detailed Analysis section
+  useEffect(() => {
+    let timeoutId = null;
+
+    const handleHashChange = () => {
+      if (window.location.hash === '#detailed-analysis') {
+        // Wait for the element to be available (analysis might not be loaded yet)
+        const checkElement = () => {
+          const element = document.getElementById('detailed-analysis');
+          if (element) {
+            // Small delay to ensure DOM is ready
+            setTimeout(() => {
+              element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              // Expand the section if it's collapsed
+              setExpandedDetailsSection(prev => {
+                if (!prev) return true;
+                return prev;
+              });
+            }, 100);
+            return true;
+          }
+          return false;
+        };
+
+        // Try immediately
+        if (!checkElement()) {
+          // If not found, try again after a short delay (for when analysis loads)
+          timeoutId = setTimeout(() => {
+            checkElement();
+          }, 500);
+        }
+      }
+    };
+
+    // Handle initial load with hash
+    handleHashChange();
+
+    // Handle hash changes
+    window.addEventListener('hashchange', handleHashChange);
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [analysis]); // Re-run when analysis changes
 
   const cloudNames = useMemo(() => {
     if (!analysis) return [];
@@ -131,7 +179,12 @@ export default function App() {
       setAnalysis(result);
       setStatus(`Analyzed ${file.name}`);
     } catch (err) {
-      setError(err.message || "Failed to parse HAR file.");
+      console.error('HAR upload error:', {
+        message: err.message,
+        stack: err.stack,
+        error: err
+      });
+      setError("Failed to parse HAR file. Please ensure it's a valid HAR file.");
       setStatus("");
     } finally {
       setIsBusy(false);
@@ -151,7 +204,12 @@ export default function App() {
       setAnalysis(result);
       setStatus("HTML scan complete.");
     } catch (err) {
-      setError(err.message || "Failed to analyze HTML.");
+      console.error('HTML analyze error:', {
+        message: err.message,
+        stack: err.stack,
+        error: err
+      });
+      setError("Failed to analyze HTML. Please check the HTML content.");
       setStatus("");
     } finally {
       setIsBusy(false);
@@ -172,29 +230,173 @@ export default function App() {
         url = `https://${url}`;
       }
       
-      // Use Cloudflare Worker proxy to avoid CORS issues
-      // Replace with your deployed worker URL
-      const workerUrl = import.meta.env.VITE_WORKER_URL || 'https://cloudinary-evaluator-proxy.your-subdomain.workers.dev';
-      const proxyUrl = `${workerUrl}?url=${encodeURIComponent(url)}`;
+      console.log('[App] Starting site URL analysis:', {
+        siteUrl,
+        normalizedUrl: url,
+        timestamp: new Date().toISOString()
+      });
       
-      const response = await fetch(proxyUrl, {
+      // Use Cloudflare Worker proxy to avoid CORS issues
+      const workerUrl = import.meta.env.VITE_WORKER_URL;
+      
+      console.log('[App] Worker URL check:', {
+        workerUrl: workerUrl || 'NOT CONFIGURED',
+        hasWorkerUrl: !!workerUrl,
+        isString: typeof workerUrl === 'string',
+        isEmpty: !workerUrl || workerUrl.trim() === '',
+        hasPlaceholder: workerUrl?.includes('your-subdomain'),
+        startsWithHttp: workerUrl?.startsWith('http://') || workerUrl?.startsWith('https://')
+      });
+      
+      // Validate worker URL is properly configured and is an absolute URL
+      // Must check these conditions in order to avoid calling methods on undefined/null
+      let proxyUrl;
+      
+      if (!workerUrl || 
+          typeof workerUrl !== 'string' ||
+          workerUrl.trim() === '' || 
+          workerUrl.includes('your-subdomain') ||
+          (!workerUrl.startsWith('http://') && !workerUrl.startsWith('https://'))) {
+        console.error('[App] Worker URL validation failed - returning early');
+        setError("Website URL fetching is not configured. Please use HAR file upload or paste HTML as an alternative method.");
+        setStatus("");
+        setIsBusy(false);
+        return;
+      }
+      
+      // Construct the proxy URL - workerUrl is guaranteed to be a valid absolute URL at this point
+      const trimmedWorkerUrl = workerUrl.trim();
+      proxyUrl = `${trimmedWorkerUrl}?url=${encodeURIComponent(url)}`;
+      
+      console.log('[App] Constructed proxy URL:', proxyUrl);
+      
+      // Final validation: ensure proxyUrl is an absolute URL to prevent Vite from trying to serve it
+      try {
+        new URL(proxyUrl); // This will throw if not a valid absolute URL
+        console.log('[App] Proxy URL validation passed');
+      } catch (e) {
+        console.error('[App] Proxy URL validation failed:', {
+          proxyUrl,
+          error: e.message,
+          stack: e.stack
+        });
+        setError("Invalid worker configuration. Please use HAR file upload or paste HTML as an alternative method.");
+        setStatus("");
+        setIsBusy(false);
+        return;
+      }
+      
+      console.log('[App] Making fetch request to worker:', {
+        proxyUrl,
         method: 'GET',
-        headers: {
-          'Accept': 'text/html',
-        },
+        headers: { 'Accept': 'text/html' }
+      });
+      const fetchStartTime = Date.now();
+      
+      let response;
+      try {
+        response = await fetch(proxyUrl, {
+          method: 'GET',
+          headers: {
+            'Accept': 'text/html',
+          },
+        });
+      } catch (fetchError) {
+        console.error('[App] Fetch request failed (network error):', {
+          error: fetchError.message,
+          name: fetchError.name,
+          stack: fetchError.stack,
+          cause: fetchError.cause,
+          proxyUrl,
+          targetUrl: url
+        });
+        throw fetchError;
+      }
+      
+      const fetchDuration = Date.now() - fetchStartTime;
+      console.log('[App] Fetch response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        duration: `${fetchDuration}ms`,
+        headers: Object.fromEntries(response.headers.entries())
       });
       
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || `Failed to fetch: ${response.status} ${response.statusText}`);
+        let errorData;
+        try {
+          const text = await response.text();
+          console.log('[App] Error response text:', text);
+          errorData = JSON.parse(text);
+        } catch (e) {
+          console.error('[App] Failed to parse error response:', {
+            parseError: e.message,
+            responseText: await response.text().catch(() => 'Could not read response')
+          });
+          errorData = { error: response.statusText, status: response.status };
+        }
+        
+        console.error('[App] Worker response error:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorData,
+          proxyUrl,
+          targetUrl: url
+        });
+        
+        // Create user-friendly error message based on status code
+        let userFriendlyMessage = errorData.details || errorData.error || `Failed to fetch: ${response.status} ${response.statusText}`;
+        
+        if (response.status === 403) {
+          userFriendlyMessage = "This website is blocking automated requests. This is common for sites with bot protection (like Cloudflare). Try using a HAR file export from your browser instead, or paste the HTML directly.";
+        } else if (response.status === 404) {
+          userFriendlyMessage = "The website URL could not be found. Please check the URL and try again, or use a HAR file or paste HTML directly.";
+        } else if (response.status === 429) {
+          userFriendlyMessage = "Too many requests. The website is rate-limiting requests. Please wait a moment and try again, or use a HAR file or paste HTML directly.";
+        } else if (response.status >= 500) {
+          userFriendlyMessage = "The website server is experiencing issues. Please try again later, or use a HAR file or paste HTML directly.";
+        } else if (response.status >= 400) {
+          userFriendlyMessage = `Unable to access this website (${response.status}). The site may require authentication or be blocking requests. Try using a HAR file export from your browser or paste the HTML directly.`;
+        }
+        
+        // Create error object with user-friendly message
+        const error = new Error(userFriendlyMessage);
+        error.status = response.status;
+        error.errorData = errorData;
+        throw error;
       }
       
       const html = await response.text();
+      console.log('[App] Received HTML, length:', html.length);
+      
       const result = analyzeFromHtml(html);
+      console.log('[App] Analysis complete:', {
+        assetsFound: result.perAsset?.length || 0,
+        score: result.score
+      });
+      
       setAnalysis(result);
       setStatus(`Analyzed ${url}`);
     } catch (err) {
-      setError(err.message || "Failed to fetch or analyze the website.");
+      console.error('[App] Site URL analyze error (catch block):', {
+        message: err.message,
+        name: err.name,
+        stack: err.stack,
+        error: err,
+        cause: err.cause,
+        status: err.status,
+        errorData: err.errorData,
+        url: siteUrl,
+        workerUrl: import.meta.env.VITE_WORKER_URL,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Use the error message if it's already user-friendly, otherwise show generic message
+      const errorMessage = err.message && err.message.length > 0 
+        ? err.message 
+        : "Failed to fetch or analyze the website. Please try using a HAR file or paste HTML directly.";
+      
+      setError(errorMessage);
       setStatus("");
     } finally {
       setIsBusy(false);
@@ -214,7 +416,13 @@ export default function App() {
       setAnalysis(result);
       setStatus("Delivery URL analyzed.");
     } catch (err) {
-      setError(err.message || "Failed to analyze the delivery URL.");
+      console.error('Delivery URL analyze error:', {
+        message: err.message,
+        stack: err.stack,
+        error: err,
+        url: deliveryUrl
+      });
+      setError("Failed to analyze the delivery URL. Please check that it's a valid Cloudinary URL.");
       setStatus("");
     } finally {
       setIsBusy(false);
@@ -365,22 +573,22 @@ export default function App() {
         <section className="bg-white rounded-3xl p-6 shadow border border-slate-200">
           <h2 className="text-2xl font-semibold">Scan a page</h2>
           <p className="text-slate-600 mt-2">
-            Choose an input method to analyze Cloudinary usage and get optimization recommendations.
+            Enter a website URL to analyze Cloudinary usage and get optimization recommendations. Alternative methods available below.
           </p>
 
           <div className="mt-6">
             <div className="flex flex-wrap gap-2 border-b border-slate-200">
               <button
                 type="button"
-                onClick={() => setActiveTab("har")}
+                onClick={() => setActiveTab("website")}
                 className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                  activeTab === "har"
+                  activeTab === "website"
                     ? "border-blue-600 text-blue-600"
                     : "border-transparent text-slate-600 hover:text-slate-900"
                 }`}
                 disabled={isBusy}
               >
-                HAR File
+                Website URL
               </button>
               <button
                 type="button"
@@ -396,18 +604,6 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab("website")}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                  activeTab === "website"
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-slate-600 hover:text-slate-900"
-                }`}
-                disabled={isBusy}
-              >
-                Website URL
-              </button>
-              <button
-                type="button"
                 onClick={() => setActiveTab("delivery")}
                 className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === "delivery"
@@ -418,12 +614,24 @@ export default function App() {
               >
                 Delivery URL
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("har")}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === "har"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-slate-600 hover:text-slate-900"
+                }`}
+                disabled={isBusy}
+              >
+                HAR File (Backup)
+              </button>
             </div>
 
             <div className="mt-6">
               {activeTab === "har" && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700">Upload HAR</label>
+                  <label className="block text-sm font-medium text-slate-700">Upload HAR File (Alternative Method)</label>
                   <input
                     type="file"
                     accept=".har,application/json"
@@ -432,7 +640,7 @@ export default function App() {
                     disabled={isBusy}
                   />
                   <p className="text-xs text-slate-500 mt-2">
-                    Chrome/Edge: DevTools → Network → Save all as{" "}
+                    Upload a HAR file to analyze a saved network capture. Chrome/Edge: DevTools → Network → Save all as{" "}
                     <a href="https://developer.chrome.com/docs/devtools/network/reference/" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">HAR</a>.
                   </p>
                 </div>
@@ -464,7 +672,10 @@ export default function App() {
 
               {activeTab === "website" && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700">Website URL</label>
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="block text-sm font-medium text-slate-700">Website URL</label>
+                    <span className="px-2 py-0.5 text-xs font-semibold bg-blue-100 text-blue-700 rounded-full">Recommended</span>
+                  </div>
                   <input
                     type="url"
                     value={siteUrl}
@@ -474,9 +685,7 @@ export default function App() {
                     disabled={isBusy}
                   />
                   <p className="text-xs text-slate-500 mt-2">
-                    {import.meta.env.VITE_WORKER_URL 
-                      ? "Using Cloudflare Worker proxy to avoid CORS issues."
-                      : "Note: Configure VITE_WORKER_URL to enable CORS-free fetching. Otherwise, use a HAR file if direct fetching fails."}
+                    Enter your website URL to automatically fetch and analyze your Cloudinary usage.
                   </p>
                   <div className="flex flex-wrap gap-3 mt-3">
                     <button
@@ -485,7 +694,7 @@ export default function App() {
                       onClick={handleSiteUrlAnalyze}
                       disabled={isBusy || !siteUrl.trim()}
                     >
-                      Fetch & Analyze
+                      Analyze Site
                     </button>
                   </div>
                 </div>
@@ -549,7 +758,7 @@ export default function App() {
           />
           <div className="relative z-10">
             <div>
-              <h2 className="text-xl font-semibold">Your Cloudinary Value</h2>
+              <h2 className="text-xl font-semibold">Cloudinary Evaluator Score:</h2>
               {cloudNames.length > 0 && (
                 <div className="flex gap-2 flex-wrap mt-2">
                   {cloudNames.map(name => (
@@ -570,7 +779,7 @@ export default function App() {
                   <strong>{analysis.score}%</strong> of Cloudinary's potential value.
                 </>
               ) : (
-                <>Upload a HAR or paste HTML, then click <em>Scan Website</em>.</>
+                <>Enter a website URL above to analyze your Cloudinary usage.</>
               )}
             </p>
 
@@ -654,7 +863,7 @@ export default function App() {
       </main>
 
       {analysis && analysis.perAsset && analysis.perAsset.length > 0 && (
-        <section className="max-w-6xl mx-auto px-6">
+        <section id="detailed-analysis" className="max-w-6xl mx-auto px-6">
           <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
             <div className="flex items-center justify-between mb-4">
               <button
@@ -847,19 +1056,15 @@ export default function App() {
           <h2 className="text-xl font-semibold">FAQ</h2>
           <div className="mt-3 space-y-3 text-slate-700">
             <details>
-              <summary className="cursor-pointer font-medium">Why HAR?</summary>
+              <summary className="cursor-pointer font-medium">Why use HAR as a backup?</summary>
               <div className="mt-2">
-                HAR captures response headers and all network requests so we can evaluate caching and
-                assets not present directly in markup.
+                HAR files capture response headers and all network requests, allowing us to evaluate caching and assets not present directly in markup. Use this method if you prefer to analyze a saved network capture.
               </div>
             </details>
             <details>
               <summary className="cursor-pointer font-medium">Can it fetch my site directly?</summary>
               <div className="mt-2">
-                Yes! The app includes a Cloudflare Worker that proxies requests server-side to avoid CORS issues.
-                Deploy the worker using <code className="bg-slate-100 px-1 rounded">npm run deploy:worker</code> and
-                configure <code className="bg-slate-100 px-1 rounded">VITE_WORKER_URL</code> in your <code className="bg-slate-100 px-1 rounded">.env</code> file.
-                Otherwise, use a HAR file or paste HTML directly.
+                Yes! Simply enter your website URL and click "Analyze Site" to automatically fetch and analyze your Cloudinary usage. If you prefer, you can also upload a HAR file or paste HTML directly.
               </div>
             </details>
             <details>
