@@ -546,15 +546,16 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-6 py-8 text-center lg:text-left">
           <div className="flex items-center justify-center lg:justify-start mb-4">
             <img
-              src="https://res.cloudinary.com/demo/image/upload/v1614540168/media-editor/cld-logos/vector_cloudinary_logo_blue_0720_eps.png"
+              src="https://res.cloudinary.com/demo/image/upload/f_auto,q_auto,w_auto,c_limit,dpr_auto/media-editor/cld-logos/vector_cloudinary_logo_blue_0720_eps.png"
               alt="Cloudinary Logo"
-              className="h-20 w-auto"
+              className="h-12 sm:h-16 md:h-20 w-auto max-w-full"
+              loading="lazy"
             />
           </div>
           <p className="text-sm uppercase tracking-wider text-blue-600 font-semibold">
             Cloudinary Evaluator
           </p>
-          <h1 className="text-4xl font-bold mt-2">Optimize. Measure. Elevate.</h1>
+          <h1 className="text-4xl font-bold mt-2">Optimize. Measure. Evaluate.</h1>
           <p className="text-slate-600 mt-3 max-w-3xl mx-auto lg:mx-0">
             Upload a HAR export, paste HTML, fetch a website URL, or analyze a Cloudinary delivery URL to get instant insights into Cloudinary usage, media coverage, and the fastest wins to chase next.{" "}
             <a
