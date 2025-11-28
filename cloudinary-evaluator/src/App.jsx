@@ -750,12 +750,12 @@ export default function App() {
         <aside className="bg-gradient-to-b from-white to-blue-50 rounded-3xl p-6 shadow border border-blue-100 relative overflow-hidden">
           <div 
             className="absolute inset-0 opacity-5 pointer-events-none"
-            style={{
-              backgroundImage: `url('https://cdn.prod.website-files.com/64d41aab8183c7c3324ddb29/674f5ed6ef4a6bb77f9723ba_0-glyph-square.svg')`,
-              backgroundSize: 'contain',
-              backgroundRepeat: 'no-repeat',
-              backgroundPosition: 'center',
-            }}
+            // style={{
+            //   backgroundImage: `url('https://cdn.prod.website-files.com/64d41aab8183c7c3324ddb29/674f5ed6ef4a6bb77f9723ba_0-glyph-square.svg')`,
+            //   backgroundSize: '20%',
+            //   backgroundRepeat: 'repeat',
+            //   backgroundPosition: 'center stretch',
+            // }}
           />
           <div className="relative z-10">
             <div>
