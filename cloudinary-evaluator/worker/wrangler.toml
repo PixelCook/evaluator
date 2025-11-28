@@ -1,4 +1,4 @@
-name = "cloudinary-evaluator-proxy"
+name = "proxy"
 main = "index.js"
 compatibility_date = "2024-01-01"
 
