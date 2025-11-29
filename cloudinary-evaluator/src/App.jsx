@@ -304,10 +304,10 @@ export default function App() {
       try {
         response = await fetch(proxyUrl, {
           method: 'GET',
-          headers: {
+        headers: {
             'Accept': 'text/html',
-          },
-        });
+        },
+      });
       } catch (fetchError) {
         console.error('[App] Fetch request failed (network error):', {
           error: fetchError.message,
@@ -379,8 +379,20 @@ export default function App() {
       const result = analyzeFromHtml(html);
       console.log('[App] Analysis complete:', {
         assetsFound: result.perAsset?.length || 0,
-        score: result.score
+        score: result.score,
+        totalRequests: result.totalRequests,
+        cloudinaryAssets: result.coverage?.cloudinary || 0,
+        nonCloudinaryImages: result.coverage?.nonCloudinaryImages || 0
       });
+      
+      // Check if no assets were found - likely blocking or incomplete HTML
+      const totalAssets = (result.perAsset?.length || 0) + (result.nonCloudinaryImages?.length || 0);
+      if (totalAssets === 0) {
+        setError("No images or assets were found in the analysis. This may indicate that the website is blocking automated requests or serving content dynamically. Please try: (1) Whitelisting the user-agent 'CloudinaryEvaluator/1.0' in your bot protection settings, or (2) Using a HAR file export from your browser instead.");
+        setStatus("");
+        setIsBusy(false);
+        return;
+      }
       
       setAnalysis(result);
       setStatus(`Analyzed ${url}`);
@@ -682,7 +694,7 @@ export default function App() {
               {activeTab === "website" && (
                 <div>
                   <div className="flex items-center gap-2 mb-2">
-                    <label className="block text-sm font-medium text-slate-700">Website URL</label>
+                  <label className="block text-sm font-medium text-slate-700">Website URL</label>
                     <span className="px-2 py-0.5 text-xs font-semibold bg-blue-100 text-blue-700 rounded-full">Recommended</span>
                   </div>
                   <input
@@ -865,6 +877,16 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                
+                {/* Disclaimer if assets seem missing */}
+                {(analysis.coverage.cloudinary === 0 && analysis.coverage.nonCloudinaryImages === 0) || 
+                 (analysis.coverage.total < 5 && analysis.coverage.cloudinary === 0) ? (
+                  <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl">
+                    <p className="text-sm text-yellow-800">
+                      <strong>Note:</strong> Few or no assets were detected in this analysis. If you expected to see more assets, the website may be blocking automated requests or serving content dynamically. Consider: (1) Whitelisting the user-agent <code className="bg-yellow-100 px-1 rounded text-xs">CloudinaryEvaluator/1.0</code> in your bot protection settings, or (2) Using a HAR file export from your browser for a more complete analysis.
+                    </p>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -873,7 +895,7 @@ export default function App() {
 
       {analysis && analysis.perAsset && analysis.perAsset.length > 0 && (
         <section id="detailed-analysis" className="max-w-6xl mx-auto px-6">
-          <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
+              <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
             <div className="flex items-center justify-between mb-4">
               <button
                 type="button"
@@ -882,7 +904,7 @@ export default function App() {
               >
                 <span className={`transition-transform ${expandedDetailsSection ? 'rotate-90' : ''}`}>
                   ▶
-                </span>
+                        </span>
                 <span>
                   Detailed Analysis
                   <span className="ml-2 text-base font-normal text-slate-500">
@@ -912,8 +934,8 @@ export default function App() {
                 >
                   Export JSON
                 </button>
-              </div>
-            </div>
+                      </div>
+                    </div>
 
             {expandedDetailsSection && (
               <div className="pt-4 border-t border-slate-200">
@@ -928,7 +950,7 @@ export default function App() {
                           <div className="flex items-center">
                             URL
                             {getSortIcon('url')}
-                          </div>
+                </div>
                         </th>
                         <th 
                           className="text-left py-3 px-4 font-semibold text-slate-700 w-32 cursor-pointer hover:bg-slate-100 select-none"
@@ -937,7 +959,7 @@ export default function App() {
                           <div className="flex items-center">
                             Status
                             {getSortIcon('status')}
-                          </div>
+              </div>
                         </th>
                         <th 
                           className="text-left py-3 px-4 font-semibold text-slate-700 w-40 cursor-pointer hover:bg-slate-100 select-none"
@@ -959,14 +981,14 @@ export default function App() {
                           <React.Fragment key={asset.url + index}>
                             <tr className={`border-b border-slate-200 hover:bg-slate-50 ${hasIssues ? 'bg-red-50/30' : 'bg-green-50/30'}`}>
                               <td className="py-3 px-4">
-                                <a
-                                  href={asset.url}
-                                  target="_blank"
-                                  rel="noreferrer"
+                  <a
+                    href={asset.url}
+                    target="_blank"
+                    rel="noreferrer"
                                   className="text-blue-700 break-all hover:underline font-mono text-sm"
-                                >
-                                  {asset.url}
-                                </a>
+                  >
+                    {asset.url}
+                  </a>
                               </td>
                               <td className="py-3 px-4">
                                 {hasIssues ? (
@@ -1007,27 +1029,27 @@ export default function App() {
                               <tr className="bg-slate-50">
                                 <td colSpan={4} className="py-3 px-4 pl-12">
                                   <div className="space-y-2">
-                                    {asset.issues.map((issue, issueIndex) => {
-                                      const docLink = getIssueDocLink(issue);
-                                      return (
+                      {asset.issues.map((issue, issueIndex) => {
+                        const docLink = getIssueDocLink(issue);
+                        return (
                                         <div key={issueIndex} className="flex items-start gap-2 text-sm text-slate-700">
                                           <span className="text-red-500 mt-1">•</span>
                                           <div className="flex-1">
                                             <span>{issue}</span>
-                                            {docLink && (
-                                              <a
-                                                href={docLink}
-                                                target="_blank"
-                                                rel="noreferrer"
+                            {docLink && (
+                                <a
+                                  href={docLink}
+                                  target="_blank"
+                                  rel="noreferrer"
                                                 className="text-blue-600 hover:underline ml-2"
-                                              >
+                                >
                                                 Learn more →
-                                              </a>
-                                            )}
+                                </a>
+                            )}
                                           </div>
                                         </div>
-                                      );
-                                    })}
+                        );
+                      })}
                                   </div>
                                 </td>
                               </tr>
