@@ -1,4 +1,4 @@
-const RESOURCE_TYPES = new Set(["image", "video"]);
+const RESOURCE_TYPES = new Set(["image", "video", "raw"]);
 const DELIVERY_TYPES = new Set(["upload", "fetch", "private", "authenticated"]);
 
 // Cloudinary transformation parameter patterns (e.g., w_100, h_200, c_fill, f_auto, q_auto)
@@ -40,22 +40,50 @@ function parseCloudinaryUrl(url) {
       const remainderSegments = segments.slice(idx + 2);
       if (!remainderSegments.length) return null;
 
+      // For raw files, transformations are less common, so handle differently
+      const isRawFile = resourceType === "raw";
+      
       const transformationSegments = [];
       let stopIndex = remainderSegments.length;
 
+      // Look for transformation patterns or version/publicId markers
       for (let i = 0; i < remainderSegments.length; i += 1) {
         const segment = remainderSegments[i];
         if (!segment) continue;
-        if (/^v\d+$/i.test(segment) || /\.[a-z0-9]+$/i.test(segment)) {
-          stopIndex = i;
+        
+        // Check if this segment looks like transformations (contains transformation patterns)
+        const hasTransformations = hasCloudinaryTransformations(segment);
+        
+        // For raw files, be more lenient - transformations are optional
+        if (isRawFile) {
+          // If we find transformation patterns, treat as transformations
+          // Otherwise, everything is the publicId
+          if (hasTransformations) {
+            transformationSegments.push(segment);
+            stopIndex = i + 1;
+            break;
+          }
+          // For raw files without transformations, the entire remainder is the publicId
+          stopIndex = 0;
           break;
+        } else {
+          // For image/video, look for version markers or file extensions
+          if (/^v\d+$/i.test(segment) || /\.[a-z0-9]+$/i.test(segment)) {
+            stopIndex = i;
+            break;
+          }
+          // Check if segment contains transformation patterns
+          if (hasTransformations) {
+            transformationSegments.push(segment);
+          }
         }
-        transformationSegments.push(segment);
       }
 
       const rawTransformations = transformationSegments.join("/");
       const txSet = new Set(rawTransformations.split(",").filter(Boolean));
-      const publicId = remainderSegments.slice(stopIndex).join("/");
+      const publicId = isRawFile && transformationSegments.length === 0 
+        ? remainderSegments.join("/") 
+        : remainderSegments.slice(stopIndex).join("/");
 
       return {
         cloudName: cloudName || parsed.hostname,
