@@ -83,6 +83,12 @@ export default function App() {
     if (issue.includes("q_auto")) {
       return "https://cloudinary.com/documentation/transformation_reference#q_auto";
     }
+    if (issue.includes("width/height transformations") || issue.includes("resize")) {
+      return "https://cloudinary.com/documentation/resizing_and_cropping#banner";
+    }
+    if (issue.includes("c_limit")) {
+      return "https://cloudinary.com/documentation/transformation_reference#c_limit";
+    }
     if (issue.includes("Cache-Control")) {
       return "https://cloudinary.com/documentation/caching";
     }

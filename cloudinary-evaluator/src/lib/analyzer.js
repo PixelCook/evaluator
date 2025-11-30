@@ -4,6 +4,64 @@ const DELIVERY_TYPES = new Set(["upload", "fetch", "private", "authenticated"]);
 // Cloudinary transformation parameter patterns (e.g., w_100, h_200, c_fill, f_auto, q_auto)
 const CLOUDINARY_TX_PATTERN = /[a-z]+_(?:auto|limit|fill|crop|scale|fit|pad|lfill|limit|mfit|mpad|thumb|imagga_crop|imagga_scale|imagga_pad|\d+)/i;
 
+// Patterns for URLs that are not media files and shouldn't be considered for Cloudinary hosting
+const NON_MEDIA_PATTERNS = [
+  /^data:/i, // Data URIs
+  /doubleclick\.net/i, // Google DoubleClick tracking
+  /google-analytics\.com/i, // Google Analytics
+  /googletagmanager\.com/i, // Google Tag Manager
+  /facebook\.net/i, // Facebook tracking
+  /bidswitch\.net/i, // BidSwitch ad tech
+  /adsrvr\.org/i, // Ad server
+  /adtechus\.com/i, // Ad tech
+  /adnxs\.com/i, // AppNexus
+  /rubiconproject\.com/i, // Rubicon Project
+  /openx\.net/i, // OpenX
+  /pubmatic\.com/i, // PubMatic
+  /analytics/i, // Analytics services
+  /tracking/i, // Tracking pixels
+  /pixel/i, // Tracking pixels
+  /beacon/i, // Tracking beacons
+  /\/activity/i, // Activity tracking endpoints
+  /\/collect/i, // Data collection endpoints
+  /\/event/i, // Event tracking
+  /\/log/i, // Logging endpoints
+  /\/sync/i, // Sync endpoints (ad tech, tracking)
+  /\/api\//i, // API endpoints
+  /\/ads\//i, // Ad serving endpoints
+  /\/ad\//i, // Ad endpoints
+  /\/track/i, // Tracking endpoints
+  /\/imp/i, // Impression tracking
+  /\/click/i, // Click tracking
+  /dsp_id|user_id|pixel_id|campaign_id/i, // Common tracking query params
+  /\.json(\?|$)/i, // JSON files
+  /\.xml(\?|$)/i, // XML files (unless SVG)
+  /\.txt(\?|$)/i, // Text files
+  /\.js(\?|$)/i, // JavaScript files
+  /\.css(\?|$)/i, // CSS files
+];
+
+// Media file extensions that Cloudinary can host
+const MEDIA_EXTENSIONS = /\.(png|jpe?g|gif|webp|avif|svg|mp4|webm|mov|avi|wmv|flv|mkv|pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|json|xml|ico|bmp|tiff?|heic|heif)(\?|$)/i;
+
+function isMediaFile(url, mimeType = '') {
+  if (!url || typeof url !== 'string') return false;
+  
+  // Check if it matches non-media patterns
+  for (const pattern of NON_MEDIA_PATTERNS) {
+    if (pattern.test(url)) return false;
+  }
+  
+  // Check if it has a media file extension
+  if (MEDIA_EXTENSIONS.test(url)) return true;
+  
+  // Check MIME type if provided
+  if (mimeType && /^(image|video)\//.test(mimeType)) return true;
+  
+  // If no extension and no MIME type, it's likely not a media file
+  return false;
+}
+
 function hasCloudinaryTransformations(segment) {
   if (!segment) return false;
   // Check if segment contains Cloudinary transformation patterns
@@ -152,113 +210,54 @@ function hasCloudinaryResponseHeaders(response = {}) {
   return false;
 }
 
-function extractDimensionsFromTransformations(txSet, transformations) {
-  let width = null;
-  let height = null;
-  
-  // Check for explicit width/height transformations
-  for (const tx of txSet) {
-    // w_1234 or w_1234:auto
-    const wMatch = tx.match(/^w_(\d+)/);
-    if (wMatch) width = parseInt(wMatch[1], 10);
-    
-    // h_1234 or h_1234:auto
-    const hMatch = tx.match(/^h_(\d+)/);
-    if (hMatch) height = parseInt(hMatch[1], 10);
-  }
-  
-  // Also check the raw transformations string for c_fill, c_crop with dimensions
-  if (transformations) {
-    const cFillMatch = transformations.match(/c_(?:fill|crop)(?:,w_(\d+))?(?:,h_(\d+))?/);
-    if (cFillMatch) {
-      if (cFillMatch[1] && !width) width = parseInt(cFillMatch[1], 10);
-      if (cFillMatch[2] && !height) height = parseInt(cFillMatch[2], 10);
-    }
-  }
-  
-  return { width, height };
-}
-
-function extractDisplayDimensions(element) {
-  let displayWidth = null;
-  let displayHeight = null;
-  
-  // Check width/height attributes
-  const attrWidth = element.getAttribute("width");
-  const attrHeight = element.getAttribute("height");
-  if (attrWidth) displayWidth = parseInt(attrWidth, 10);
-  if (attrHeight) displayHeight = parseInt(attrHeight, 10);
-  
-  // Check CSS styles (if available)
-  const style = element.getAttribute("style") || "";
-  const widthMatch = style.match(/width\s*:\s*(\d+)px/i);
-  const heightMatch = style.match(/height\s*:\s*(\d+)px/i);
-  if (widthMatch && !displayWidth) displayWidth = parseInt(widthMatch[1], 10);
-  if (heightMatch && !displayHeight) displayHeight = parseInt(heightMatch[1], 10);
-  
-  return { displayWidth, displayHeight };
-}
-
-function isOversized(actualWidth, actualHeight, displayWidth, displayHeight) {
-  // If we don't have display dimensions, we can't determine if it's oversized
-  if (!displayWidth && !displayHeight) return false;
-  
-  // If we have both dimensions, check if actual is significantly larger
-  if (actualWidth && actualHeight && displayWidth && displayHeight) {
-    const actualArea = actualWidth * actualHeight;
-    const displayArea = displayWidth * displayHeight;
-    // Consider oversized if actual is more than 2x the display area
-    return actualArea > displayArea * 2;
-  }
-  
-  // If we only have one dimension, check if it's significantly larger
-  if (actualWidth && displayWidth && actualWidth > displayWidth * 1.5) return true;
-  if (actualHeight && displayHeight && actualHeight > displayHeight * 1.5) return true;
-  
-  return false;
-}
-
 function finalizeAnalysis(result) {
   const perAsset = result.cloudinaryRequests.map(entry => {
     const cld = entry.cld || { txSet: new Set() };
     const issues = [];
-    if (!cld.txSet.has("f_auto")) {
-      issues.push("Enable f_auto to serve modern formats automatically.");
-    }
-    const hasQAuto = cld.txSet.has("q_auto") || [...cld.txSet].some(t => t.startsWith("q_auto:"));
-    if (!hasQAuto) {
-      issues.push("Add q_auto to balance bytes vs quality.");
-    }
+    const isRawFile = cld.resourceType === "raw";
     
-    // Check for oversized assets
-    const dimensions = extractDimensionsFromTransformations(cld.txSet, cld.transformations);
-    const displayDims = entry.displayDimensions || {};
-    
-    // If we have display dimensions but no width/height transformations, suggest resizing
-    if ((displayDims.displayWidth || displayDims.displayHeight) && !dimensions.width && !dimensions.height) {
-      issues.push("Add width/height transformations to resize images to display dimensions and reduce file size.");
-    }
-    // If we have both actual and display dimensions and it's oversized
-    else if (dimensions.width && dimensions.height && displayDims.displayWidth && displayDims.displayHeight) {
-      if (isOversized(dimensions.width, dimensions.height, displayDims.displayWidth, displayDims.displayHeight)) {
-        issues.push(`Image is oversized (${dimensions.width}×${dimensions.height}px displayed as ${displayDims.displayWidth}×${displayDims.displayHeight}px). Crop and resize to match display dimensions.`);
+    // Skip f_auto, q_auto, and resizing suggestions for raw files
+    if (!isRawFile) {
+      if (!cld.txSet.has("f_auto")) {
+        issues.push("Enable f_auto to serve modern formats automatically.");
+      }
+      const hasQAuto = cld.txSet.has("q_auto") || [...cld.txSet].some(t => t.startsWith("q_auto:"));
+      if (!hasQAuto) {
+        issues.push("Add q_auto to balance bytes vs quality.");
+      }
+      
+      // Check for resizing transformations
+      const hasWidth = [...cld.txSet].some(t => t.startsWith("w_"));
+      const hasHeight = [...cld.txSet].some(t => t.startsWith("h_"));
+      const hasCLimit = cld.txSet.has("c_limit");
+      
+      // If no width or height transformations are present, suggest resizing with c_limit
+      if (!hasWidth && !hasHeight) {
+        issues.push("Add w_, h_, and c_limit transformations to resize images and prevent oversized assets.");
+      } else if (!hasCLimit && (hasWidth || hasHeight)) {
+        // If they have width/height but no c_limit, suggest adding it as a safety measure
+        issues.push("Add c_limit to prevent serving images larger than requested dimensions.");
       }
     }
     
-    return { url: entry.url, issues, cld, dimensions, displayDimensions: displayDims };
+    return { url: entry.url, issues, cld };
   });
 
   const total = perAsset.length;
   const suggestions = new Set();
 
-  const autoFormatCount = perAsset.filter(a => a.cld.txSet.has("f_auto")).length;
-  const autoQualityCount = perAsset.filter(a => a.cld.txSet.has("q_auto") || [...a.cld.txSet].some(t => t.startsWith("q_auto:"))).length;
+  // Only count image/video assets for f_auto and q_auto suggestions (exclude raw files)
+  const imageVideoAssets = perAsset.filter(a => a.cld.resourceType !== "raw");
+  const imageVideoCount = imageVideoAssets.length;
+  
+  const autoFormatCount = imageVideoAssets.filter(a => a.cld.txSet.has("f_auto")).length;
+  const autoQualityCount = imageVideoAssets.filter(a => a.cld.txSet.has("q_auto") || [...a.cld.txSet].some(t => t.startsWith("q_auto:"))).length;
 
-  if (total > 0) {
-    if (autoFormatCount / total < 0.8) {
+  if (imageVideoCount > 0) {
+    if (autoFormatCount / imageVideoCount < 0.8) {
       suggestions.add("Adopt f_auto to serve modern formats automatically.");
     }
-    if (autoQualityCount / total < 0.8) {
+    if (autoQualityCount / imageVideoCount < 0.8) {
       suggestions.add("Adopt q_auto for balanced quality vs bytes.");
     }
   }
@@ -267,13 +266,16 @@ function finalizeAnalysis(result) {
     suggestions.add("Migrate non-Cloudinary images to leverage optimization & CDN.");
   }
 
-  // Check for oversized assets across all Cloudinary images
-  const oversizedAssets = perAsset.filter(a => {
-    return a.issues.some(issue => issue.includes("oversized") || issue.includes("resize"));
+  // Check for assets without resizing transformations or c_limit (exclude raw files)
+  const assetsNeedingSizing = perAsset.filter(a => {
+    return a.cld.resourceType !== "raw" && a.issues.some(issue => 
+      issue.includes("w_, h_, and c_limit") || 
+      issue.includes("c_limit")
+    );
   });
   
-  if (oversizedAssets.length > 0) {
-    suggestions.add(`Resize ${oversizedAssets.length} oversized image${oversizedAssets.length > 1 ? 's' : ''} to match display dimensions and reduce bandwidth.`);
+  if (assetsNeedingSizing.length > 0) {
+    suggestions.add(`Add w_, h_, and c_limit transformations to ${assetsNeedingSizing.length} image${assetsNeedingSizing.length > 1 ? 's' : ''} to resize and prevent oversized assets.`);
   }
 
   const cacheFindings = [];
@@ -347,8 +349,11 @@ export function analyzeFromHar(harJson) {
     // For standard Cloudinary URLs, we also check headers for confirmation
     // For CNAME URLs, we rely on transformation pattern detection
     const isCloudinary = cld && (hasCloudinaryResponseHeaders(e.response) || cld.txSet.size > 0);
-    if (isCloudinary) out.cloudinaryRequests.push({ url, response: e.response, cld });
-    else if (/^image\//.test(mime) || /\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(url)) out.nonCloudinaryImages.push({ url });
+    if (isCloudinary) {
+      out.cloudinaryRequests.push({ url, response: e.response, cld });
+    } else if (isMediaFile(url, mime)) {
+      out.nonCloudinaryImages.push({ url });
+    }
   }
 
   return finalizeAnalysis(out);
@@ -365,16 +370,12 @@ export function analyzeFromHtml(html) {
     const firstUrl = String(raw).split(/\s+/)[0];
     const cld = parseCloudinaryUrl(firstUrl);
     
-    // Extract display dimensions from the element
-    const displayDims = extractDisplayDimensions(el);
-    
     if (cld) {
       out.cloudinaryRequests.push({ 
         url: firstUrl, 
-        cld,
-        displayDimensions: displayDims
+        cld
       });
-    } else {
+    } else if (isMediaFile(firstUrl)) {
       out.nonCloudinaryImages.push({ url: firstUrl });
     }
   }
