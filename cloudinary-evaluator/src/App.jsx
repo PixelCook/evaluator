@@ -155,6 +155,10 @@ export default function App() {
           aValue = a.url.toLowerCase();
           bValue = b.url.toLowerCase();
           break;
+        case 'pageUrl':
+          aValue = (a.pageUrl || '').toLowerCase();
+          bValue = (b.pageUrl || '').toLowerCase();
+          break;
         case 'status':
           // Sort by hasIssues: problems first if ascending, correct first if descending
           aValue = a.issues.length > 0 ? 1 : 0;
@@ -455,7 +459,7 @@ export default function App() {
               const html = await fetchThroughWorker(pageUrl);
               if (cancelToken.cancelled) return;
               
-              const result = analyzeFromHtml(html);
+      const result = analyzeFromHtml(html);
               allResults.push({ url: pageUrl, result });
               
               setSitemapProgress(prev => ({
@@ -829,7 +833,7 @@ export default function App() {
                       className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="use-sitemap" className="text-sm text-slate-700 cursor-pointer">
-                      Analyze multiple pages from sitemap (first 10 pages)
+                      Analyze multiple pages from sitemap found in robots.txt (Takes first 10 pages listed)
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
@@ -1119,6 +1123,17 @@ export default function App() {
                             {getSortIcon('url')}
                 </div>
                         </th>
+                        {analysis.isSitemapAnalysis && (
+                          <th 
+                            className="text-left py-3 px-4 font-semibold text-slate-700 cursor-pointer hover:bg-slate-100 select-none"
+                            onClick={() => handleSort('pageUrl')}
+                          >
+                            <div className="flex items-center">
+                              Page
+                              {getSortIcon('pageUrl')}
+              </div>
+                          </th>
+                        )}
                         <th 
                           className="text-left py-3 px-4 font-semibold text-slate-700 w-32 cursor-pointer hover:bg-slate-100 select-none"
                           onClick={() => handleSort('status')}
@@ -1157,6 +1172,23 @@ export default function App() {
                     {asset.url}
                   </a>
                               </td>
+                              {analysis.isSitemapAnalysis && (
+                                <td className="py-3 px-4">
+                                  {asset.pageUrl ? (
+                                    <a
+                                      href={asset.pageUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-blue-600 break-all hover:underline text-sm"
+                                      title={asset.pageUrl}
+                                    >
+                                      {asset.pageUrl.length > 50 ? `${asset.pageUrl.substring(0, 50)}...` : asset.pageUrl}
+                                    </a>
+                                  ) : (
+                                    <span className="text-slate-400 text-sm">—</span>
+                                  )}
+                                </td>
+                              )}
                               <td className="py-3 px-4">
                                 {hasIssues ? (
                                   <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">

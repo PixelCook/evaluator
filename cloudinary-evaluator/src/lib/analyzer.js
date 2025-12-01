@@ -240,7 +240,12 @@ export function finalizeAnalysis(result) {
       }
     }
     
-    return { url: entry.url, issues, cld };
+    const asset = { url: entry.url, issues, cld };
+    // Preserve pageUrl if it exists (from sitemap analysis)
+    if (entry.pageUrl) {
+      asset.pageUrl = entry.pageUrl;
+    }
+    return asset;
   });
 
   const total = perAsset.length;
