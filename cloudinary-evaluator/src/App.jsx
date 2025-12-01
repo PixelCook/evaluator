@@ -3,7 +3,7 @@ import "./App.css";
 import Donut from "./components/Donut";
 import Pill from "./components/Pill";
 import Suggestion from "./components/Suggestion";
-import { analyzeFromHar, analyzeFromHtml, analyzeFromUrl } from "./lib/analyzer";
+import { analyzeFromHar, analyzeFromHtml, analyzeFromUrl, finalizeAnalysis } from "./lib/analyzer";
 
 export default function App() {
   const [analysis, setAnalysis] = useState(null);
@@ -19,6 +19,9 @@ export default function App() {
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [sortColumn, setSortColumn] = useState(null);
   const [sortDirection, setSortDirection] = useState('asc'); // 'asc' or 'desc'
+  const [sitemapProgress, setSitemapProgress] = useState({ current: 0, total: 0, totalPages: 0, completed: [], failed: [] });
+  const [sitemapCancelToken, setSitemapCancelToken] = useState(null);
+  const [useSitemap, setUseSitemap] = useState(false);
 
   // Handle hash navigation to Detailed Analysis section
   useEffect(() => {
@@ -223,6 +226,122 @@ export default function App() {
     }
   }
 
+  async function fetchThroughWorker(url) {
+    const workerUrl = import.meta.env.VITE_WORKER_URL;
+    if (!workerUrl || typeof workerUrl !== 'string' || workerUrl.trim() === '' || 
+        workerUrl.includes('your-subdomain') ||
+        (!workerUrl.startsWith('http://') && !workerUrl.startsWith('https://'))) {
+      throw new Error('Worker not configured');
+    }
+    
+    const trimmedWorkerUrl = workerUrl.trim().replace(/\/+$/, '');
+    const proxyUrl = `${trimmedWorkerUrl}?url=${encodeURIComponent(url)}`;
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    
+    try {
+      const response = await fetch(proxyUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'text/html' },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const text = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(text);
+        } catch {
+          errorData = { error: response.statusText, status: response.status };
+        }
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      return await response.text();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        throw new Error('Request timeout');
+      }
+      throw err;
+    }
+  }
+
+  function parseRobotsTxt(robotsText) {
+    const sitemaps = [];
+    const lines = robotsText.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.toLowerCase().startsWith('sitemap:')) {
+        const sitemapUrl = trimmed.substring(8).trim();
+        if (sitemapUrl) {
+          sitemaps.push(sitemapUrl);
+        }
+      }
+    }
+    return sitemaps;
+  }
+
+  function parseSitemap(xmlText) {
+    const urls = [];
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlText, 'text/xml');
+    
+    // Check for sitemap index
+    const sitemapIndex = doc.querySelector('sitemapindex');
+    if (sitemapIndex) {
+      const sitemapUrls = Array.from(doc.querySelectorAll('sitemap > loc')).map(el => el.textContent.trim());
+      return { type: 'index', urls: sitemapUrls };
+    }
+    
+    // Regular sitemap
+    const urlElements = doc.querySelectorAll('url > loc');
+    urlElements.forEach(el => {
+      const url = el.textContent.trim();
+      if (url) urls.push(url);
+    });
+    
+    return { type: 'sitemap', urls };
+  }
+
+  function compileSitemapResults(pageResults, totalPages) {
+    const allCloudinaryRequests = [];
+    const allNonCloudinaryImages = [];
+    let totalRequests = 0;
+    
+    pageResults.forEach(({ url: pageUrl, result }) => {
+      totalRequests += result.totalRequests || 0;
+      
+      result.cloudinaryRequests?.forEach(req => {
+        allCloudinaryRequests.push({ ...req, pageUrl });
+      });
+      
+      result.nonCloudinaryImages?.forEach(img => {
+        allNonCloudinaryImages.push({ ...img, pageUrl });
+      });
+    });
+    
+    const combinedResult = {
+      totalRequests,
+      cloudinaryRequests: allCloudinaryRequests,
+      nonCloudinaryImages: allNonCloudinaryImages
+    };
+    
+    const finalized = finalizeAnalysis(combinedResult);
+    
+    return {
+      ...finalized,
+      isSitemapAnalysis: true,
+      sitemapStats: {
+        pagesAnalyzed: pageResults.length,
+        totalPagesInSitemap: totalPages,
+        percentage: totalPages > 0 ? ((pageResults.length / totalPages) * 100).toFixed(1) : '0.0'
+      }
+    };
+  }
+
   async function handleSiteUrlAnalyze() {
     if (!siteUrl.trim()) {
       setError("Enter a website URL first.");
@@ -231,155 +350,149 @@ export default function App() {
     setIsBusy(true);
     setError("");
     setStatus(`Fetching ${siteUrl}…`);
+    
+    const cancelToken = { cancelled: false };
+    setSitemapCancelToken(cancelToken);
+    setSitemapProgress({ current: 0, total: 0, totalPages: 0, completed: [], failed: [] });
+    
     try {
       let url = siteUrl.trim();
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         url = `https://${url}`;
       }
       
+      const urlObj = new URL(url);
+      const baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+      
       console.log('[App] Starting site URL analysis:', {
         siteUrl,
         normalizedUrl: url,
+        baseUrl,
         timestamp: new Date().toISOString()
       });
       
-      // Use Cloudflare Worker proxy to avoid CORS issues
+      // Validate worker URL
       const workerUrl = import.meta.env.VITE_WORKER_URL;
-      
-      console.log('[App] Worker URL check:', {
-        workerUrl: workerUrl || 'NOT CONFIGURED',
-        hasWorkerUrl: !!workerUrl,
-        isString: typeof workerUrl === 'string',
-        isEmpty: !workerUrl || workerUrl.trim() === '',
-        hasPlaceholder: workerUrl?.includes('your-subdomain'),
-        startsWithHttp: workerUrl?.startsWith('http://') || workerUrl?.startsWith('https://')
-      });
-      
-      // Validate worker URL is properly configured and is an absolute URL
-      // Must check these conditions in order to avoid calling methods on undefined/null
-      let proxyUrl;
-      
-      if (!workerUrl || 
-          typeof workerUrl !== 'string' ||
-          workerUrl.trim() === '' || 
+      if (!workerUrl || typeof workerUrl !== 'string' || workerUrl.trim() === '' || 
           workerUrl.includes('your-subdomain') ||
           (!workerUrl.startsWith('http://') && !workerUrl.startsWith('https://'))) {
-        console.error('[App] Worker URL validation failed - returning early');
         setError("Website URL fetching is not configured. Please use HAR file upload or paste HTML as an alternative method.");
         setStatus("");
         setIsBusy(false);
         return;
       }
       
-      // Construct the proxy URL - workerUrl is guaranteed to be a valid absolute URL at this point
-      // Remove any trailing slashes to ensure clean URL construction
-      const trimmedWorkerUrl = workerUrl.trim().replace(/\/+$/, '');
-      proxyUrl = `${trimmedWorkerUrl}?url=${encodeURIComponent(url)}`;
-      
-      console.log('[App] Constructed proxy URL:', {
-        originalWorkerUrl: workerUrl,
-        trimmedWorkerUrl,
-        targetUrl: url,
-        finalProxyUrl: proxyUrl
-      });
-      
-      // Final validation: ensure proxyUrl is an absolute URL to prevent Vite from trying to serve it
-      try {
-        new URL(proxyUrl); // This will throw if not a valid absolute URL
-        console.log('[App] Proxy URL validation passed');
-      } catch (e) {
-        console.error('[App] Proxy URL validation failed:', {
-          proxyUrl,
-          error: e.message,
-          stack: e.stack
-        });
-        setError("Invalid worker configuration. Please use HAR file upload or paste HTML as an alternative method.");
-        setStatus("");
-        setIsBusy(false);
-        return;
-      }
-      
-      console.log('[App] Making fetch request to worker:', {
-        proxyUrl,
-        method: 'GET',
-        headers: { 'Accept': 'text/html' }
-      });
-      const fetchStartTime = Date.now();
-      
-      let response;
-      try {
-        response = await fetch(proxyUrl, {
-          method: 'GET',
-        headers: {
-            'Accept': 'text/html',
-        },
-      });
-      } catch (fetchError) {
-        console.error('[App] Fetch request failed (network error):', {
-          error: fetchError.message,
-          name: fetchError.name,
-          stack: fetchError.stack,
-          cause: fetchError.cause,
-          proxyUrl,
-          targetUrl: url
-        });
-        throw fetchError;
-      }
-      
-      const fetchDuration = Date.now() - fetchStartTime;
-      console.log('[App] Fetch response received:', {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        duration: `${fetchDuration}ms`,
-        headers: Object.fromEntries(response.headers.entries())
-      });
-      
-      if (!response.ok) {
-        let errorData;
+      // Step 1: Check robots.txt for sitemap (only if checkbox is enabled)
+      let sitemapUrl = null;
+      if (useSitemap) {
+        setStatus("Checking robots.txt for sitemap...");
         try {
-          const text = await response.text();
-          console.log('[App] Error response text:', text);
-          errorData = JSON.parse(text);
-        } catch (e) {
-          console.error('[App] Failed to parse error response:', {
-            parseError: e.message,
-            responseText: await response.text().catch(() => 'Could not read response')
-          });
-          errorData = { error: response.statusText, status: response.status };
+          const robotsUrl = `${baseUrl}/robots.txt`;
+          const robotsText = await fetchThroughWorker(robotsUrl);
+          const sitemaps = parseRobotsTxt(robotsText);
+          if (sitemaps.length > 0) {
+            sitemapUrl = sitemaps[0];
+            console.log('[App] Found sitemap in robots.txt:', sitemapUrl);
+          }
+        } catch (err) {
+          console.log('[App] robots.txt not found or error:', err.message);
+          // Continue with single page analysis
         }
-        
-        console.error('[App] Worker response error:', {
-          status: response.status,
-          statusText: response.statusText,
-          errorData,
-          proxyUrl,
-          targetUrl: url
-        });
-        
-        // Create user-friendly error message based on status code
-        let userFriendlyMessage = errorData.details || errorData.error || `Failed to fetch: ${response.status} ${response.statusText}`;
-        
-        if (response.status === 403) {
-          userFriendlyMessage = "This website is blocking automated requests. This is common for sites with bot protection (like Cloudflare). Try using a HAR file export from your browser instead, or paste the HTML directly.";
-        } else if (response.status === 404) {
-          userFriendlyMessage = "The website URL could not be found. Please check the URL and try again, or use a HAR file or paste HTML directly.";
-        } else if (response.status === 429) {
-          userFriendlyMessage = "Too many requests. The website is rate-limiting requests. Please wait a moment and try again, or use a HAR file or paste HTML directly.";
-        } else if (response.status >= 500) {
-          userFriendlyMessage = "The website server is experiencing issues. Please try again later, or use a HAR file or paste HTML directly.";
-        } else if (response.status >= 400) {
-          userFriendlyMessage = `Unable to access this website (${response.status}). The site may require authentication or be blocking requests. Try using a HAR file export from your browser or paste the HTML directly.`;
-        }
-        
-        // Create error object with user-friendly message
-        const error = new Error(userFriendlyMessage);
-        error.status = response.status;
-        error.errorData = errorData;
-        throw error;
       }
       
-      const html = await response.text();
+      // Step 2: If sitemap found and enabled, analyze first 10 pages
+      if (useSitemap && sitemapUrl && !cancelToken.cancelled) {
+        setStatus("Fetching sitemap...");
+        const sitemapXml = await fetchThroughWorker(sitemapUrl);
+        if (cancelToken.cancelled) return;
+        
+        const sitemapData = parseSitemap(sitemapXml);
+        let urlsToAnalyze = [];
+        
+        if (sitemapData.type === 'index') {
+          // Fetch first sitemap from index
+          if (sitemapData.urls.length > 0) {
+            setStatus("Fetching first sitemap from index...");
+            const firstSitemapXml = await fetchThroughWorker(sitemapData.urls[0]);
+            if (cancelToken.cancelled) return;
+            const firstSitemap = parseSitemap(firstSitemapXml);
+            urlsToAnalyze = firstSitemap.urls;
+          }
+        } else {
+          urlsToAnalyze = sitemapData.urls;
+        }
+        
+        if (urlsToAnalyze.length > 0 && !cancelToken.cancelled) {
+          const totalPages = urlsToAnalyze.length;
+          const pagesToAnalyze = urlsToAnalyze.slice(0, 10);
+          const percentage = ((pagesToAnalyze.length / totalPages) * 100).toFixed(1);
+          
+          setSitemapProgress({ 
+            current: 0, 
+            total: pagesToAnalyze.length, 
+            totalPages,
+            completed: [], 
+            failed: [] 
+          });
+          
+          setStatus(`Analyzing first 10 pages (${percentage}% of ${totalPages} pages in sitemap)...`);
+          
+          const allResults = [];
+          const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          
+          for (let i = 0; i < pagesToAnalyze.length; i++) {
+            if (cancelToken.cancelled) {
+              setStatus("Analysis cancelled.");
+              setIsBusy(false);
+              return;
+            }
+            
+            const pageUrl = pagesToAnalyze[i];
+            setSitemapProgress(prev => ({ ...prev, current: i + 1 }));
+            setStatus(`Analyzing page ${i + 1}/${pagesToAnalyze.length} (${percentage}% of ${totalPages} total)...`);
+            
+            try {
+              const html = await fetchThroughWorker(pageUrl);
+              if (cancelToken.cancelled) return;
+              
+              const result = analyzeFromHtml(html);
+              allResults.push({ url: pageUrl, result });
+              
+              setSitemapProgress(prev => ({
+                ...prev,
+                completed: [...prev.completed, pageUrl]
+              }));
+              
+              if (i < pagesToAnalyze.length - 1) {
+                await delay(2000);
+              }
+            } catch (err) {
+              console.error(`[App] Failed to analyze ${pageUrl}:`, err);
+              setSitemapProgress(prev => ({
+                ...prev,
+                failed: [...prev.failed, { url: pageUrl, error: err.message }]
+              }));
+            }
+          }
+          
+          if (cancelToken.cancelled) return;
+          
+          setStatus("Compiling results...");
+          const compiledResult = compileSitemapResults(allResults, totalPages);
+          setAnalysis(compiledResult);
+          setStatus(`Analysis complete: ${allResults.length} pages analyzed (${percentage}% of ${totalPages} total pages)`);
+          setIsBusy(false);
+          return;
+        }
+      }
+      
+      // Step 3: Fallback to single page analysis
+      if (cancelToken.cancelled) return;
+      
+      setStatus(`Fetching ${url}…`);
+      const html = await fetchThroughWorker(url);
+      if (cancelToken.cancelled) return;
+      
       console.log('[App] Received HTML, length:', html.length);
       
       const result = analyzeFromHtml(html);
@@ -391,7 +504,6 @@ export default function App() {
         nonCloudinaryImages: result.coverage?.nonCloudinaryImages || 0
       });
       
-      // Check if no assets were found - likely blocking or incomplete HTML
       const totalAssets = (result.perAsset?.length || 0) + (result.nonCloudinaryImages?.length || 0);
       if (totalAssets === 0) {
         setError("No images or assets were found in the analysis. This may indicate that the website is blocking automated requests or serving content dynamically. Please try: (1) Whitelisting the user-agent 'CloudinaryEvaluator/1.0' in your bot protection settings, or (2) Using a HAR file export from your browser instead.");
@@ -403,20 +515,15 @@ export default function App() {
       setAnalysis(result);
       setStatus(`Analyzed ${url}`);
     } catch (err) {
-      console.error('[App] Site URL analyze error (catch block):', {
+      console.error('[App] Site URL analyze error:', {
         message: err.message,
         name: err.name,
         stack: err.stack,
         error: err,
-        cause: err.cause,
-        status: err.status,
-        errorData: err.errorData,
         url: siteUrl,
-        workerUrl: import.meta.env.VITE_WORKER_URL,
         timestamp: new Date().toISOString()
       });
       
-      // Use the error message if it's already user-friendly, otherwise show generic message
       const errorMessage = err.message && err.message.length > 0 
         ? err.message 
         : "Failed to fetch or analyze the website. Please try using a HAR file or paste HTML directly.";
@@ -425,6 +532,7 @@ export default function App() {
       setStatus("");
     } finally {
       setIsBusy(false);
+      setSitemapCancelToken(null);
     }
   }
 
@@ -583,7 +691,7 @@ export default function App() {
           </p>
           <h1 className="text-4xl font-bold mt-2">Optimize. Measure. Evaluate.</h1>
           <p className="text-slate-600 mt-3 max-w-3xl mx-auto lg:mx-0">
-            Upload a HAR export, paste HTML, fetch a website URL, or analyze a Cloudinary delivery URL to get instant insights into Cloudinary usage, media coverage, and the fastest wins to chase next.{" "}
+          Fetch a website URL, upload a HAR export, paste HTML, or analyze a Cloudinary delivery URL to get instant insights into Cloudinary usage, media coverage, and the fastest wins to chase next.{" "}
             <a
               href="https://cloudinary.com/documentation"
               target="_blank"
@@ -711,9 +819,57 @@ export default function App() {
                     placeholder="https://example.com"
                     disabled={isBusy}
                   />
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="use-sitemap"
+                      checked={useSitemap}
+                      onChange={e => setUseSitemap(e.target.checked)}
+                      disabled={isBusy}
+                      className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="use-sitemap" className="text-sm text-slate-700 cursor-pointer">
+                      Analyze multiple pages from sitemap (first 10 pages)
+                    </label>
+                  </div>
                   <p className="text-xs text-slate-500 mt-2">
-                    Enter your website URL to automatically fetch and analyze your Cloudinary usage.
+                    Enter your website URL to analyze your Cloudinary usage. Enable the checkbox above to analyze multiple pages from your sitemap.
                   </p>
+                  {sitemapProgress.total > 0 && (
+                    <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-blue-900">
+                          Analyzing page {sitemapProgress.current} of {sitemapProgress.total}
+                          {sitemapProgress.totalPages > 0 && (
+                            <span className="text-xs font-normal text-blue-700 ml-2">
+                              ({sitemapProgress.totalPages > 0 ? ((sitemapProgress.current / sitemapProgress.totalPages) * 100).toFixed(1) : '0.0'}% of {sitemapProgress.totalPages} total pages)
+                            </span>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (sitemapCancelToken) {
+                              sitemapCancelToken.cancelled = true;
+                            }
+                            setSitemapProgress({ current: 0, total: 0, totalPages: 0, completed: [], failed: [] });
+                          }}
+                          className="text-xs text-blue-700 hover:text-blue-900 underline"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <div className="w-full bg-blue-200 rounded-full h-2">
+                        <div 
+                          className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${sitemapProgress.total > 0 ? (sitemapProgress.current / sitemapProgress.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <div className="mt-2 text-xs text-blue-700">
+                        Completed: {sitemapProgress.completed.length} | Failed: {sitemapProgress.failed.length}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-3 mt-3">
                     <button
                       type="button"
@@ -804,6 +960,11 @@ export default function App() {
                 <>
                   You are currently capturing{" "}
                   <strong>{analysis.score}%</strong> of Cloudinary's potential value.
+                  {analysis.isSitemapAnalysis && analysis.sitemapStats && (
+                    <span className="block mt-2 text-sm text-slate-600">
+                      Sample size: {analysis.sitemapStats.pagesAnalyzed} of {analysis.sitemapStats.totalPagesInSitemap} pages ({analysis.sitemapStats.percentage}%)
+                    </span>
+                  )}
                 </>
               ) : (
                 <>Enter a website URL above to analyze your Cloudinary usage.</>

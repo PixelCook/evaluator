@@ -210,7 +210,7 @@ function hasCloudinaryResponseHeaders(response = {}) {
   return false;
 }
 
-function finalizeAnalysis(result) {
+export function finalizeAnalysis(result) {
   const perAsset = result.cloudinaryRequests.map(entry => {
     const cld = entry.cld || { txSet: new Set() };
     const issues = [];
