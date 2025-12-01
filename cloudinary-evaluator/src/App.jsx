@@ -404,7 +404,7 @@ export default function App() {
         }
       }
       
-      // Step 2: If sitemap found and enabled, analyze first 10 pages
+      // Step 2: If sitemap found and enabled, analyze 10 random pages
       if (useSitemap && sitemapUrl && !cancelToken.cancelled) {
         setStatus("Fetching sitemap...");
         const sitemapXml = await fetchThroughWorker(sitemapUrl);
@@ -428,7 +428,12 @@ export default function App() {
         
         if (urlsToAnalyze.length > 0 && !cancelToken.cancelled) {
           const totalPages = urlsToAnalyze.length;
-          const pagesToAnalyze = urlsToAnalyze.slice(0, 10);
+          
+          // Randomly select 10 pages (or all if less than 10)
+          const numPagesToAnalyze = Math.min(10, urlsToAnalyze.length);
+          const shuffled = [...urlsToAnalyze].sort(() => Math.random() - 0.5);
+          const pagesToAnalyze = shuffled.slice(0, numPagesToAnalyze);
+          
           const percentage = ((pagesToAnalyze.length / totalPages) * 100).toFixed(1);
           
           setSitemapProgress({ 
@@ -439,7 +444,7 @@ export default function App() {
             failed: [] 
           });
           
-          setStatus(`Analyzing first 10 pages (${percentage}% of ${totalPages} pages in sitemap)...`);
+          setStatus(`Analyzing ${numPagesToAnalyze} random pages (${percentage}% of ${totalPages} pages in sitemap)...`);
           
           const allResults = [];
           const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -833,7 +838,7 @@ export default function App() {
                       className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="use-sitemap" className="text-sm text-slate-700 cursor-pointer">
-                      Analyze multiple pages from sitemap found in robots.txt (Takes first 10 pages listed)
+                      Analyze multiple pages from sitemap found in robots.txt (Randomly selects 10 pages)
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
