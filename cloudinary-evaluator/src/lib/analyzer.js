@@ -66,7 +66,15 @@ function hasCloudinaryTransformations(segment) {
   if (!segment) return false;
   // Check if segment contains Cloudinary transformation patterns
   // Examples: "w_144,c_limit", "f_auto,q_auto", "w_100,h_200,c_fill"
-  return CLOUDINARY_TX_PATTERN.test(segment) || /^[a-z]+_\d+/.test(segment);
+  // Cloudinary uses commas to separate transformations, not semicolons
+  // Must contain comma-separated transformation patterns
+  if (!segment.includes(',')) {
+    // Single transformation - must match pattern
+    return CLOUDINARY_TX_PATTERN.test(segment);
+  }
+  // Multiple transformations separated by commas
+  const parts = segment.split(',');
+  return parts.some(part => CLOUDINARY_TX_PATTERN.test(part.trim()) || /^[a-z]+_\d+/.test(part.trim()));
 }
 
 function parseCloudinaryUrl(url) {
@@ -154,33 +162,118 @@ function parseCloudinaryUrl(url) {
     }
   }
 
-  // Fallback: Detect Cloudinary URLs by transformation patterns (for CNAME scenarios)
-  // Look for segments containing Cloudinary transformation patterns
+  // Fallback: For CNAME scenarios, try to find proper Cloudinary structure
+  // First, try to find explicit <asset_type>/<delivery_type> structure
+  let foundResourceType = null;
+  let foundDeliveryType = null;
+  let cloudNameIdx = -1;
+  
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (RESOURCE_TYPES.has(segments[i])) {
+      if (DELIVERY_TYPES.has(segments[i + 1])) {
+        foundResourceType = segments[i];
+        foundDeliveryType = segments[i + 1];
+        cloudNameIdx = i > 0 ? i - 1 : -1;
+        break;
+      }
+    }
+  }
+  
+  // If we found explicit structure, parse it
+  if (foundResourceType && foundDeliveryType) {
+    const resourceTypeIdx = segments.indexOf(foundResourceType);
+    const deliveryTypeIdx = resourceTypeIdx + 1;
+    const remainderSegments = segments.slice(deliveryTypeIdx + 1);
+    
+    if (!remainderSegments.length) return null;
+    
+    const isRawFile = foundResourceType === "raw";
+    const transformationSegments = [];
+    let stopIndex = remainderSegments.length;
+    
+    for (let i = 0; i < remainderSegments.length; i += 1) {
+      const segment = remainderSegments[i];
+      if (!segment) continue;
+      
+      const hasTransformations = hasCloudinaryTransformations(segment);
+      
+      if (isRawFile) {
+        if (hasTransformations) {
+          transformationSegments.push(segment);
+          stopIndex = i + 1;
+          break;
+        }
+        stopIndex = 0;
+        break;
+      } else {
+        if (/^v\d+$/i.test(segment) || /\.[a-z0-9]+$/i.test(segment)) {
+          stopIndex = i;
+          break;
+        }
+        if (hasTransformations) {
+          transformationSegments.push(segment);
+        }
+      }
+    }
+    
+    const rawTransformations = transformationSegments.join("/");
+    const txSet = new Set(rawTransformations.split(",").filter(Boolean));
+    const publicId = isRawFile && transformationSegments.length === 0 
+      ? remainderSegments.join("/") 
+      : remainderSegments.slice(stopIndex).join("/");
+    
+    const cloudName = cloudNameIdx >= 0 ? segments[cloudNameIdx] : parsed.hostname;
+    
+    return {
+      cloudName,
+      resourceType: foundResourceType,
+      deliveryType: foundDeliveryType,
+      publicId,
+      transformations: rawTransformations,
+      txSet,
+    };
+  }
+  
+  // Second fallback: For CNAME URLs without explicit structure, require:
+  // 1. Valid comma-separated Cloudinary transformations (not semicolons)
+  // 2. A public ID with file extension after transformations
+  // This handles cases like: /path/w_144,c_limit/public_id.png
+  if (segments.length < 2) return null;
+  
   let transformationSegmentIndex = -1;
   let transformationSegment = "";
   
+  // Find a segment with valid Cloudinary transformations (comma-separated)
   for (let i = 0; i < segments.length; i++) {
-    if (hasCloudinaryTransformations(segments[i])) {
+    const segment = segments[i];
+    // Must have comma-separated transformations (Cloudinary format)
+    // Reject semicolon-separated (not Cloudinary format)
+    if (segment.includes(';')) continue; // Reject semicolons
+    if (hasCloudinaryTransformations(segment)) {
       transformationSegmentIndex = i;
-      transformationSegment = segments[i];
+      transformationSegment = segment;
       break;
     }
   }
-
+  
   if (transformationSegmentIndex === -1) return null;
-
+  
+  // Must have segments after transformations (the public ID)
+  const publicIdSegments = segments.slice(transformationSegmentIndex + 1);
+  if (!publicIdSegments.length) return null;
+  
+  // The public ID should end with a file extension
+  const publicId = publicIdSegments.join("/");
+  const hasFileExtension = /\.[a-z0-9]+$/i.test(publicId);
+  if (!hasFileExtension) return null;
+  
   // Extract transformations
   const rawTransformations = transformationSegment;
   const txSet = new Set(rawTransformations.split(",").filter(Boolean));
   
-  // Everything after the transformation segment is the publicId
-  const publicId = segments.slice(transformationSegmentIndex + 1).join("/");
-  
-  if (!publicId) return null;
-
-  // Try to infer resource type from file extension or default to "image"
+  // Infer resource type from file extension
   const inferredResourceType = /\.(mp4|webm|mov|avi|wmv|flv|mkv)$/i.test(publicId) ? "video" : "image";
-
+  
   return {
     cloudName: parsed.hostname, // Use CNAME domain as cloudName
     resourceType: inferredResourceType,
