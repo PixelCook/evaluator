@@ -838,7 +838,7 @@ export default function App() {
                       className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="use-sitemap" className="text-sm text-slate-700 cursor-pointer">
-                      Analyze random 10 pages from sitemap if listed in robots.txt.
+                      Analyze random 10 pages from sitemap.xml if listed in robots.txt.
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
