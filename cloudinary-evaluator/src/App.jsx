@@ -23,6 +23,7 @@ export default function App() {
   const [sitemapCancelToken, setSitemapCancelToken] = useState(null);
   const [useSitemap, setUseSitemap] = useState(false);
   const [assetDetails, setAssetDetails] = useState(new Map()); // Map<url, {contentLength, contentType, duration, loading, error}>
+  const [realSavingsExample, setRealSavingsExample] = useState(null); // {originalUrl, optimizedUrl, originalSize, optimizedSize, savings, loading, error}
 
   // Handle hash navigation to Detailed Analysis section
   useEffect(() => {
@@ -148,6 +149,106 @@ export default function App() {
       }
     }
   }, [analysis, loadAssetDetails]);
+
+  // Find largest asset and fetch real savings example
+  useEffect(() => {
+    if (!analysis) {
+      setRealSavingsExample(null);
+      return;
+    }
+
+    const findAndFetchLargestAsset = async () => {
+      setRealSavingsExample({ loading: true });
+      
+      // Collect all assets with their sizes
+      // Only include Cloudinary assets to use their actual cloud name
+      const assetsWithSizes = [];
+      
+      // Add Cloudinary assets only
+      if (analysis.perAsset) {
+        for (const asset of analysis.perAsset) {
+          // Only process Cloudinary assets that have a cloud name
+          if (!asset.cld || !asset.cld.cloudName) {
+            continue;
+          }
+          const details = assetDetails.get(asset.url);
+          if (details && details.contentLength && details.contentLength > 0) {
+            // Skip if over 20MB
+            if (details.contentLength <= 20 * 1024 * 1024) {
+              assetsWithSizes.push({
+                asset,
+                size: details.contentLength,
+                isCloudinary: true
+              });
+            }
+          }
+        }
+      }
+      
+      // Sort by size (largest first)
+      assetsWithSizes.sort((a, b) => b.size - a.size);
+      
+      // Try each asset until we find one that works
+      for (const { asset, size } of assetsWithSizes) {
+        try {
+          // Build optimized URL for fetching using optimizationexample cloud
+          const optimizedUrlForFetch = buildOptimizedUrlForFetch(asset);
+          if (!optimizedUrlForFetch) {
+            continue; // Skip if we can't build optimized URL
+          }
+          
+          // Build display URL using their actual cloud name
+          const optimizedUrlForDisplay = buildOptimizedUrl(asset);
+          if (!optimizedUrlForDisplay || optimizedUrlForDisplay === asset.url) {
+            continue; // Skip if we can't build display URL or it's the same
+          }
+          
+          // Fetch both original and optimized sizes (using optimizationexample for fetch)
+          const originalDetails = await fetchAssetSize(asset.url);
+          if (!originalDetails || !originalDetails.contentLength) {
+            continue;
+          }
+          
+          const optimizedDetails = await fetchAssetSize(optimizedUrlForFetch);
+          if (!optimizedDetails || !optimizedDetails.contentLength) {
+            continue;
+          }
+          
+          const actualSavings = originalDetails.contentLength - optimizedDetails.contentLength;
+          const savingsPercent = Math.round((actualSavings / originalDetails.contentLength) * 100);
+          
+          setRealSavingsExample({
+            originalUrl: asset.url,
+            optimizedUrl: optimizedUrlForDisplay, // Display URL with their cloud name
+            optimizedUrlForFetch: optimizedUrlForFetch, // Keep fetch URL for reference
+            originalSize: originalDetails.contentLength,
+            optimizedSize: optimizedDetails.contentLength,
+            savings: actualSavings,
+            savingsPercent: savingsPercent,
+            originalContentType: originalDetails.contentType,
+            optimizedContentType: optimizedDetails.contentType,
+            loading: false,
+            error: null
+          });
+          
+          return; // Success, stop trying
+        } catch (error) {
+          // Continue to next asset
+          continue;
+        }
+      }
+      
+      // If we get here, no asset worked
+      setRealSavingsExample({ loading: false, error: 'No suitable asset found for real savings example' });
+    };
+    
+    // Wait a bit for asset details to load
+    const timeoutId = setTimeout(() => {
+      findAndFetchLargestAsset();
+    }, 2000);
+    
+    return () => clearTimeout(timeoutId);
+  }, [analysis, assetDetails]);
 
   const cloudNames = useMemo(() => {
     if (!analysis) return [];
@@ -591,6 +692,91 @@ export default function App() {
     }
     const parts = segment.split(',');
     return parts.some(part => CLOUDINARY_TX_PATTERN.test(part.trim()) || /^[a-z]+_\d+/.test(part.trim()));
+  }
+
+  function buildOptimizedUrlForFetch(asset) {
+    if (!asset.cld) return null;
+    
+    const cld = asset.cld;
+    const currentUrl = asset.url;
+    const issues = asset.issues || [];
+    
+    try {
+      const urlObj = new URL(currentUrl);
+      const isCNAME = !urlObj.hostname.includes('cloudinary.com');
+      
+      // Get existing transformations
+      const existingTx = cld.transformations ? cld.transformations.split(",").filter(Boolean) : [];
+      const txSet = new Set(existingTx);
+      
+      // Extract existing width and height if present
+      let existingWidth = null;
+      let existingHeight = null;
+      for (const tx of existingTx) {
+        if (tx.startsWith('w_')) {
+          const widthMatch = tx.match(/^w_(\d+)/);
+          if (widthMatch) existingWidth = parseInt(widthMatch[1], 10);
+        }
+        if (tx.startsWith('h_')) {
+          const heightMatch = tx.match(/^h_(\d+)/);
+          if (heightMatch) existingHeight = parseInt(heightMatch[1], 10);
+        }
+      }
+      
+      // Add missing optimizations
+      const needsFAuto = issues.some(issue => issue.includes('f_auto'));
+      const needsQAuto = issues.some(issue => issue.includes('q_auto'));
+      const needsResize = issues.some(issue => issue.includes('resize') || issue.includes('w_, h_'));
+      const needsCLimit = issues.some(issue => issue.includes('c_limit'));
+      
+      // Build optimized transformations
+      const optimizedTx = [...existingTx];
+      
+      // Add resizing if needed (width/height with c_limit)
+      const hasWidth = existingWidth !== null;
+      const hasHeight = existingHeight !== null;
+      
+      if (needsResize && (!hasWidth && !hasHeight)) {
+        optimizedTx.push('w_1200');
+        optimizedTx.push('c_limit');
+      } else if (hasWidth || hasHeight) {
+        if (needsCLimit && !txSet.has('c_limit')) {
+          optimizedTx.push('c_limit');
+        }
+      }
+      
+      if (needsFAuto && !txSet.has('f_auto')) {
+        optimizedTx.push('f_auto');
+      }
+      if (needsQAuto && !txSet.has('q_auto') && ![...txSet].some(t => t.startsWith('q_auto:'))) {
+        optimizedTx.push('q_auto');
+      }
+      
+      // For CNAME, use fetch API with optimizationexample
+      if (isCNAME) {
+        const txString = optimizedTx.length > 0 ? optimizedTx.join(',') : '';
+        return `https://res.cloudinary.com/optimizationexample/image/fetch/${txString ? txString + '/' : ''}${encodeURIComponent(currentUrl)}`;
+      }
+      
+      // For standard Cloudinary URLs, build with optimizationexample cloud
+      if (cld.resourceType && cld.deliveryType && cld.publicId) {
+        const basePath = `/optimizationexample/${cld.resourceType}/${cld.deliveryType}`;
+        const txString = optimizedTx.length > 0 ? optimizedTx.join(',') : '';
+        const publicId = cld.publicId;
+        
+        let optimizedPath = basePath;
+        if (txString) {
+          optimizedPath += `/${txString}`;
+        }
+        optimizedPath += `/${publicId}`;
+        
+        return `https://res.cloudinary.com${optimizedPath}`;
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
   }
 
   function buildOptimizedUrl(asset) {
@@ -1534,6 +1720,84 @@ export default function App() {
         </aside>
       </main>
 
+      {realSavingsExample && realSavingsExample.loading && (
+        <section className="max-w-6xl mx-auto px-6">
+          <div className="mt-6 p-6 bg-gradient-to-br from-blue-50 to-purple-50 border border-blue-200 rounded-3xl shadow">
+            <h2 className="text-2xl font-semibold text-blue-900 mb-4">Real Savings Example</h2>
+            <div className="flex items-center justify-center py-12">
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative w-16 h-16">
+                  <div className="absolute inset-0 border-4 border-blue-200 rounded-full"></div>
+                  <div className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent animate-spin"></div>
+                </div>
+                <p className="text-slate-600 text-sm">Processing real savings example...</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {realSavingsExample && !realSavingsExample.loading && !realSavingsExample.error && (
+        <section className="max-w-6xl mx-auto px-6">
+          <div className="mt-6 p-6 bg-gradient-to-br from-blue-50 to-purple-50 border border-blue-200 rounded-3xl shadow">
+            <h2 className="text-2xl font-semibold text-blue-900 mb-4">Real Savings Example</h2>
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="p-4 bg-white rounded-xl border border-red-100">
+                <h3 className="font-semibold text-slate-700 mb-2">Original Asset</h3>
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <span className="font-medium text-slate-600">Size:</span>{' '}
+                    <span className="text-red-600 font-semibold">{formatBytes(realSavingsExample.originalSize)}</span>
+                  </div>
+                  <div className="mt-2">
+                    <a
+                      href={realSavingsExample.originalUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline break-all font-mono text-xs"
+                    >
+                      {realSavingsExample.originalUrl}
+                    </a>
+                  </div>
+                </div>
+              </div>
+              <div className="p-4 bg-white rounded-xl border border-green-100">
+                <h3 className="font-semibold text-slate-700 mb-2">Optimized Asset</h3>
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <span className="font-medium text-slate-600">Size:</span>{' '}
+                    <span className="text-green-600 font-semibold">{formatBytes(realSavingsExample.optimizedSize)}</span>
+                  </div>
+                  <div className="mt-2">
+                    <a
+                      href={realSavingsExample.optimizedUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-green-600 hover:underline break-all font-mono text-xs"
+                    >
+                      {realSavingsExample.optimizedUrl}
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="mt-6 p-4 bg-green-100 rounded-xl border border-green-200">
+              <div className="text-center">
+                <div className="text-4xl font-bold text-green-700 mb-1">
+                  {realSavingsExample.savingsPercent}%
+                </div>
+                <div className="text-lg text-green-800 font-medium mb-1">
+                  Actual Savings: {formatBytes(realSavingsExample.savings)}
+                </div>
+                <div className="text-sm text-green-700">
+                  Reduced from {formatBytes(realSavingsExample.originalSize)} to {formatBytes(realSavingsExample.optimizedSize)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {analysis && analysis.perAsset && analysis.perAsset.length > 0 && (
         <section id="detailed-analysis" className="max-w-6xl mx-auto px-6">
               <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
@@ -1714,12 +1978,7 @@ export default function App() {
                                             </div>
                                             <div className="text-slate-400 text-xs italic">
                                               Based on average savings percentages
-                                            </div>
-                                            {details.contentType && (
-                                              <div className="text-slate-500 text-xs mt-1">
-                                                {transformContentType(details.contentType)}
-                                              </div>
-                                            )}
+                                            </div>                                       
                                           </div>
                                         );
                                       } else {
