@@ -1475,7 +1475,7 @@ export default function App() {
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
-                    Enter your website URL to analyze your Cloudinary usage. Enable the checkbox above to analyze multiple pages from your sitemap. Optimization savings are estimated based on average savings percentages (25% for format optimization, 15% for quality optimization, 10% for resizing).
+                    Optimization savings are conservatively estimated based on average savings percentages (25% for format optimization, 15% for quality optimization, 10% for resizing).
                   </p>
                   {sitemapProgress.total > 0 && (
                     <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
