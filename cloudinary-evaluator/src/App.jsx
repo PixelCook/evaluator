@@ -386,8 +386,9 @@ export default function App() {
         return;
       }
       
-      // Step 1: Check robots.txt for sitemap (only if checkbox is enabled)
+      // Step 1: Check robots.txt for sitemap, then try domain/sitemap.xml (only if checkbox is enabled)
       let sitemapUrl = null;
+      let sitemapXml = null;
       if (useSitemap) {
         setStatus("Checking robots.txt for sitemap...");
         try {
@@ -400,14 +401,39 @@ export default function App() {
           }
         } catch (err) {
           console.log('[App] robots.txt not found or error:', err.message);
-          // Continue with single page analysis
+        }
+        
+        // Fallback: Try domain/sitemap.xml if not found in robots.txt
+        if (!sitemapUrl) {
+          setStatus("Checking domain/sitemap.xml...");
+          try {
+            const defaultSitemapUrl = `${baseUrl}/sitemap.xml`;
+            // Try to fetch and parse it to verify it's a valid sitemap
+            const fetchedSitemapXml = await fetchThroughWorker(defaultSitemapUrl);
+            // If we got content, try to parse it
+            if (fetchedSitemapXml) {
+              const testParse = parseSitemap(fetchedSitemapXml);
+              // If parsing succeeded (has urls or is an index), use it
+              if (testParse.urls && testParse.urls.length > 0) {
+                sitemapUrl = defaultSitemapUrl;
+                sitemapXml = fetchedSitemapXml; // Store it so we don't fetch again
+                console.log('[App] Found sitemap at domain/sitemap.xml:', sitemapUrl);
+              }
+            }
+          } catch (err) {
+            console.log('[App] domain/sitemap.xml not found or error:', err.message);
+            // Continue with single page analysis
+          }
         }
       }
       
       // Step 2: If sitemap found and enabled, analyze 10 random pages
       if (useSitemap && sitemapUrl && !cancelToken.cancelled) {
-        setStatus("Fetching sitemap...");
-        const sitemapXml = await fetchThroughWorker(sitemapUrl);
+        // Only fetch if we haven't already fetched it (from domain/sitemap.xml check)
+        if (!sitemapXml) {
+          setStatus("Fetching sitemap...");
+          sitemapXml = await fetchThroughWorker(sitemapUrl);
+        }
         if (cancelToken.cancelled) return;
         
         const sitemapData = parseSitemap(sitemapXml);
@@ -838,7 +864,7 @@ export default function App() {
                       className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="use-sitemap" className="text-sm text-slate-700 cursor-pointer">
-                      Analyze random 10 pages from sitemap.xml if listed in robots.txt.
+                      Analyze random 10 pages from sitemap.xml (checks robots.txt and domain/sitemap.xml).
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
