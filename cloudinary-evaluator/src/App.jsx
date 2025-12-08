@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
 import "./App.css";
 import Donut from "./components/Donut";
 import Pill from "./components/Pill";
@@ -22,6 +22,7 @@ export default function App() {
   const [sitemapProgress, setSitemapProgress] = useState({ current: 0, total: 0, totalPages: 0, completed: [], failed: [] });
   const [sitemapCancelToken, setSitemapCancelToken] = useState(null);
   const [useSitemap, setUseSitemap] = useState(false);
+  const [assetDetails, setAssetDetails] = useState(new Map()); // Map<url, {contentLength, contentType, duration, loading, error}>
 
   // Handle hash navigation to Detailed Analysis section
   useEffect(() => {
@@ -71,6 +72,83 @@ export default function App() {
     };
   }, [analysis]); // Re-run when analysis changes
 
+  // Define loadAssetDetails before useEffect that uses it
+  const loadAssetDetails = useCallback(async (asset) => {
+    const url = asset.url;
+    
+    // Check if already loaded or loading
+    setAssetDetails(prev => {
+      const existing = prev.get(url);
+      if (existing && (existing.loading || existing.contentLength)) {
+        return prev; // Already loading or loaded
+      }
+      
+      // Set loading state
+      const newMap = new Map(prev);
+      newMap.set(url, { loading: true, error: null });
+      return newMap;
+    });
+    
+    try {
+      const details = await fetchAssetSize(url);
+      setAssetDetails(prev => {
+        const newMap = new Map(prev);
+        if (details && details.contentLength) {
+          newMap.set(url, {
+            contentLength: details.contentLength,
+            contentType: details.contentType,
+            duration: details.duration,
+            loading: false,
+            error: null
+          });
+        } else if (details && details.error) {
+          newMap.set(url, {
+            loading: false,
+            error: details.error,
+            status: details.status
+          });
+        } else {
+          newMap.set(url, {
+            loading: false,
+            error: 'Unable to determine size'
+          });
+        }
+        return newMap;
+      });
+    } catch (error) {
+      setAssetDetails(prev => {
+        const newMap = new Map(prev);
+        newMap.set(url, {
+          loading: false,
+          error: error.message || 'Failed to fetch details'
+        });
+        return newMap;
+      });
+    }
+  }, []);
+
+  // Load asset details automatically for assets with issues and non-Cloudinary images
+  useEffect(() => {
+    if (analysis) {
+      // Load details for Cloudinary assets with issues (they have optimization potential)
+      if (analysis.perAsset) {
+        const assetsWithIssues = analysis.perAsset.filter(asset => asset.issues && asset.issues.length > 0);
+        assetsWithIssues.forEach(asset => {
+          loadAssetDetails(asset);
+        });
+      }
+      
+      // Load details for non-Cloudinary images (they would benefit from migrating to Cloudinary)
+      if (analysis.nonCloudinaryImages) {
+        analysis.nonCloudinaryImages.forEach(img => {
+          // Create a pseudo-asset object for non-Cloudinary images
+          const pseudoAsset = { url: img.url, issues: ['Migrate to Cloudinary'] };
+          loadAssetDetails(pseudoAsset);
+        });
+      }
+    }
+  }, [analysis, loadAssetDetails]);
+
   const cloudNames = useMemo(() => {
     if (!analysis) return [];
     const names = (analysis.cloudinaryRequests ?? [])
@@ -78,6 +156,64 @@ export default function App() {
       .filter(Boolean);
     return [...new Set(names)];
   }, [analysis]);
+
+  // Calculate total potential bandwidth savings
+  const totalBandwidthSavings = useMemo(() => {
+    if (!analysis) return null;
+    
+    let totalSavings = 0;
+    let totalCurrentSize = 0;
+    let assetsWithSavings = 0;
+    let cloudinaryAssetsWithSavings = 0;
+    let nonCloudinaryAssetsWithSavings = 0;
+    
+    // Calculate savings for Cloudinary assets
+    if (analysis.perAsset) {
+      analysis.perAsset.forEach(asset => {
+        const details = assetDetails.get(asset.url);
+        if (details && details.contentLength) {
+          const savings = calculatePotentialSavings(asset, details);
+          if (savings && savings.potentialSavings > 0) {
+            totalSavings += savings.potentialSavings;
+            totalCurrentSize += savings.currentSize;
+            assetsWithSavings++;
+            cloudinaryAssetsWithSavings++;
+          }
+        }
+      });
+    }
+    
+    // Calculate savings for non-Cloudinary images
+    if (analysis.nonCloudinaryImages) {
+      analysis.nonCloudinaryImages.forEach(img => {
+        const details = assetDetails.get(img.url);
+        if (details && details.contentLength) {
+          const pseudoAsset = { url: img.url, issues: ['Migrate to Cloudinary'] };
+          const savings = calculatePotentialSavings(pseudoAsset, details);
+          if (savings && savings.potentialSavings > 0) {
+            totalSavings += savings.potentialSavings;
+            totalCurrentSize += savings.currentSize;
+            assetsWithSavings++;
+            nonCloudinaryAssetsWithSavings++;
+          }
+        }
+      });
+    }
+    
+    const savingsPercent = totalCurrentSize > 0 
+      ? Math.round((totalSavings / totalCurrentSize) * 100) 
+      : 0;
+    
+    return {
+      totalSavings,
+      totalCurrentSize,
+      savingsPercent,
+      assetsWithSavings,
+      cloudinaryAssetsWithSavings,
+      nonCloudinaryAssetsWithSavings,
+      totalAssets: (analysis.perAsset?.length || 0) + (analysis.nonCloudinaryImages?.length || 0)
+    };
+  }, [analysis, assetDetails]);
 
   const getIssueDocLink = (issue) => {
     if (issue.includes("f_auto")) {
@@ -286,6 +422,291 @@ export default function App() {
       }
     }
     return sitemaps;
+  }
+
+  async function fetchAssetSize(url) {
+    try {
+      // Make an initial HEAD request
+      let response = await fetch(url, { method: 'HEAD' });
+      const cldError = response.headers.get('x-cld-error');
+      
+      // Check if the status is greater than 399
+      if (response.status > 399) {
+        return { status: response.status, error: cldError };
+      }
+      
+      let contentLength = response.headers.get('Content-Length');
+      let contentType = response.headers.get('Content-Type');
+      let serverTiming = response.headers.get('Server-Timing');
+      let duration = 0;
+      
+      if (serverTiming) {
+        const durationMatch = serverTiming.match(/du=(\d+(\.\d+)?)/);
+        if (durationMatch) {
+          duration = parseFloat(durationMatch[1]);
+        }
+      }
+      
+      if (contentLength && contentLength > 0) {
+        contentLength = parseInt(contentLength, 10);
+        return { contentLength, contentType, duration };
+      }
+      
+      // If Content-Length is not available or is 0, add a delay and then make a range request
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Make a range request to determine the total size
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Range': 'bytes=0-'
+        }
+      });
+      
+      const contentRange = response.headers.get('Content-Range');
+      if (contentRange) {
+        const sizeMatch = contentRange.match(/\/(\d+)$/);
+        if (sizeMatch) {
+          contentLength = parseInt(sizeMatch[1], 10);
+          if (contentLength > 0) {
+            return { contentLength, contentType, duration };
+          }
+        }
+      }
+      
+      // If unable to determine size, return null
+      return null;
+    } catch (error) {
+      console.error('Error fetching asset size:', error);
+      return null;
+    }
+  }
+
+  function transformContentType(contentType) {
+    if (!contentType) return 'Unknown';
+    const typeParts = contentType.split(';');
+    let format = typeParts[0].split('/')[1]?.toUpperCase() || 'Unknown';
+    let codec = 'Unknown';
+    
+    if (typeParts.length > 1) {
+      const codecMatch = typeParts[1].match(/codecs="?(.*?)"?$/);
+      if (codecMatch && codecMatch[1]) {
+        codec = codecMatch[1].toUpperCase();
+      }
+    }
+    
+    return `${format}, Codec=${codec}`;
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+  }
+
+  function formatToMB(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const mb = bytes / (1024 * 1024);
+    if (mb < 1) {
+      // For values less than 1MB, show in KB or bytes
+      const kb = bytes / 1024;
+      if (kb < 1) {
+        return bytes + ' B';
+      }
+      return Math.round(kb * 100) / 100 + ' KB';
+    }
+    return Math.round(mb * 100) / 100 + ' MB';
+  }
+
+  function calculatePotentialSavings(asset, details) {
+    if (!details || !details.contentLength) return null;
+    
+    const currentSize = details.contentLength;
+    const issues = asset.issues || [];
+    let potentialSavings = 0;
+    const optimizations = [];
+    
+    // Check if this is a non-Cloudinary asset (would get all optimizations)
+    const isNonCloudinary = issues.some(issue => issue.includes('Migrate to Cloudinary'));
+    
+    if (isNonCloudinary) {
+      // Non-Cloudinary images would benefit from all optimizations when migrated
+      // Estimate combined savings: format (25%) + quality (15%) + resizing (10%) = ~40% total
+      potentialSavings = currentSize * 0.40;
+      optimizations.push(
+        { type: 'Format (f_auto)', savings: currentSize * 0.25 },
+        { type: 'Quality (q_auto)', savings: currentSize * 0.15 },
+        { type: 'Resizing (w_1200, c_limit)', savings: currentSize * 0.10 }
+      );
+    } else {
+      // Estimate based on average savings percentages for Cloudinary assets
+      // Check for missing f_auto (format optimization)
+      if (issues.some(issue => issue.includes('f_auto'))) {
+        // Estimate 20-30% savings from modern formats (WebP, AVIF)
+        const formatSavings = currentSize * 0.25;
+        potentialSavings += formatSavings;
+        optimizations.push({ type: 'Format (f_auto)', savings: formatSavings });
+      }
+      
+      // Check for missing q_auto (quality optimization)
+      if (issues.some(issue => issue.includes('q_auto'))) {
+        // Estimate 10-20% savings from quality optimization
+        const qualitySavings = currentSize * 0.15;
+        potentialSavings += qualitySavings;
+        optimizations.push({ type: 'Quality (q_auto)', savings: qualitySavings });
+      }
+      
+      // Check for missing resizing (c_limit)
+      if (issues.some(issue => issue.includes('c_limit') || issue.includes('resize'))) {
+        // Estimate 5-15% savings from proper resizing
+        const resizeSavings = currentSize * 0.10;
+        potentialSavings += resizeSavings;
+        optimizations.push({ type: 'Resizing (c_limit)', savings: resizeSavings });
+      }
+      
+      // Avoid double counting - if multiple optimizations, use a combined estimate
+      if (optimizations.length > 1) {
+        // Combined savings might be less than sum (some overlap)
+        potentialSavings = currentSize * Math.min(0.4, optimizations.length * 0.15);
+      }
+    }
+    
+    return {
+      currentSize,
+      potentialSavings: Math.round(potentialSavings),
+      optimizedSize: Math.round(currentSize - potentialSavings),
+      savingsPercent: Math.round((potentialSavings / currentSize) * 100),
+      optimizations,
+      isNonCloudinary
+    };
+  }
+
+  function hasCloudinaryTransformations(segment) {
+    if (!segment) return false;
+    const CLOUDINARY_TX_PATTERN = /[a-z]+_(?:auto|limit|fill|crop|scale|fit|pad|lfill|limit|mfit|mpad|thumb|imagga_crop|imagga_scale|imagga_pad|\d+)/i;
+    if (!segment.includes(',')) {
+      return CLOUDINARY_TX_PATTERN.test(segment);
+    }
+    const parts = segment.split(',');
+    return parts.some(part => CLOUDINARY_TX_PATTERN.test(part.trim()) || /^[a-z]+_\d+/.test(part.trim()));
+  }
+
+  function buildOptimizedUrl(asset) {
+    if (!asset.cld) return null;
+    
+    const cld = asset.cld;
+    const currentUrl = asset.url;
+    const issues = asset.issues || [];
+    
+    try {
+      const urlObj = new URL(currentUrl);
+      const segments = urlObj.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
+      
+      // Get existing transformations
+      const existingTx = cld.transformations ? cld.transformations.split(",").filter(Boolean) : [];
+      const txSet = new Set(existingTx);
+      
+      // Extract existing width and height if present
+      let existingWidth = null;
+      let existingHeight = null;
+      for (const tx of existingTx) {
+        if (tx.startsWith('w_')) {
+          const widthMatch = tx.match(/^w_(\d+)/);
+          if (widthMatch) existingWidth = parseInt(widthMatch[1], 10);
+        }
+        if (tx.startsWith('h_')) {
+          const heightMatch = tx.match(/^h_(\d+)/);
+          if (heightMatch) existingHeight = parseInt(heightMatch[1], 10);
+        }
+      }
+      
+      // Add missing optimizations
+      const needsFAuto = issues.some(issue => issue.includes('f_auto'));
+      const needsQAuto = issues.some(issue => issue.includes('q_auto'));
+      const needsResize = issues.some(issue => issue.includes('resize') || issue.includes('w_, h_'));
+      const needsCLimit = issues.some(issue => issue.includes('c_limit'));
+      
+      // Build optimized transformations
+      const optimizedTx = [...existingTx];
+      
+      // Add resizing if needed (width/height with c_limit)
+      const hasWidth = existingWidth !== null;
+      const hasHeight = existingHeight !== null;
+      
+      if (needsResize && (!hasWidth && !hasHeight)) {
+        // Add default responsive dimensions for displayable content
+        // Use 1200px width as a reasonable desktop display size
+        optimizedTx.push('w_1200');
+        optimizedTx.push('c_limit');
+      } else if (hasWidth || hasHeight) {
+        // If width/height exist, ensure c_limit is present
+        if (needsCLimit && !txSet.has('c_limit')) {
+          optimizedTx.push('c_limit');
+        }
+      }
+      
+      if (needsFAuto && !txSet.has('f_auto')) {
+        optimizedTx.push('f_auto');
+      }
+      if (needsQAuto && !txSet.has('q_auto') && ![...txSet].some(t => t.startsWith('q_auto:'))) {
+        optimizedTx.push('q_auto');
+      }
+      
+      // Reconstruct URL with optimized transformations
+      if (cld.resourceType && cld.deliveryType) {
+        // Standard Cloudinary URL structure
+        const cloudName = cld.cloudName || urlObj.hostname;
+        const basePath = `/${cloudName}/${cld.resourceType}/${cld.deliveryType}`;
+        const txString = optimizedTx.length > 0 ? optimizedTx.join(',') : '';
+        const publicId = cld.publicId || '';
+        
+        // Build the path
+        let optimizedPath = basePath;
+        if (txString) {
+          optimizedPath += `/${txString}`;
+        }
+        if (publicId) {
+          optimizedPath += `/${publicId}`;
+        }
+        
+        return `${urlObj.protocol}//${urlObj.host}${optimizedPath}`;
+      } else {
+        // CNAME or non-standard structure - try to insert transformations
+        // Find where transformations should go
+        let txIndex = -1;
+        for (let i = 0; i < segments.length; i++) {
+          if (hasCloudinaryTransformations(segments[i])) {
+            txIndex = i;
+            break;
+          }
+        }
+        
+        if (txIndex >= 0) {
+          // Replace existing transformations
+          const newSegments = [...segments];
+          newSegments[txIndex] = optimizedTx.join(',');
+          return `${urlObj.protocol}//${urlObj.host}/${newSegments.join('/')}`;
+        } else {
+          // Try to insert transformations before the public ID
+          // Look for a segment that looks like a file/public ID
+          for (let i = segments.length - 1; i >= 0; i--) {
+            if (segments[i].includes('.') || segments[i].length > 10) {
+              // Likely a public ID or filename
+              const newSegments = [...segments];
+              newSegments.splice(i, 0, optimizedTx.join(','));
+              return `${urlObj.protocol}//${urlObj.host}/${newSegments.join('/')}`;
+            }
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error building optimized URL:', error);
+      return null;
+    }
   }
 
   function parseSitemap(xmlText) {
@@ -868,7 +1289,7 @@ export default function App() {
                     </label>
                   </div>
                   <p className="text-xs text-slate-500 mt-2">
-                    Enter your website URL to analyze your Cloudinary usage. Enable the checkbox above to analyze multiple pages from your sitemap.
+                    Enter your website URL to analyze your Cloudinary usage. Enable the checkbox above to analyze multiple pages from your sitemap. Optimization savings are estimated based on average savings percentages (25% for format optimization, 15% for quality optimization, 10% for resizing).
                   </p>
                   {sitemapProgress.total > 0 && (
                     <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -1006,6 +1427,23 @@ export default function App() {
               )}
             </p>
 
+            {totalBandwidthSavings && totalBandwidthSavings.totalSavings > 0 && (
+              <div className="mt-6 p-4 bg-gradient-to-br from-green-50 to-blue-50 border border-green-200 rounded-xl">
+                <h3 className="font-semibold text-green-900 mb-2 mt-0">Estimated Potential Bandwidth Savings</h3>
+                <div className="text-3xl font-bold text-green-700 mb-1">
+                  {totalBandwidthSavings.savingsPercent}%
+                  <span className="text-base font-normal text-slate-600 ml-2">
+                    ({formatToMB(totalBandwidthSavings.totalSavings)})
+                  </span>
+                </div>
+                {totalBandwidthSavings.nonCloudinaryAssetsWithSavings > 0 && (
+                  <div className="text-sm text-slate-600">
+                    Includes {totalBandwidthSavings.nonCloudinaryAssetsWithSavings} non-Cloudinary image{totalBandwidthSavings.nonCloudinaryAssetsWithSavings > 1 ? 's' : ''} that would benefit from migrating to Cloudinary (~40% estimated savings).
+                  </div>
+                )}
+              </div>
+            )}
+
             {analysis && (
               <div className="mt-6">
                 <h3 className="font-semibold">Suggestions</h3>
@@ -1017,16 +1455,17 @@ export default function App() {
                         <li key={index} className="flex gap-3 items-start">
                           <span className="mt-2 w-2 h-2 rounded-full bg-blue-500" />
                           <div className="flex-1">
-                            <span>{text}</span>
-                            {docLink && (
+                            {docLink ? (
                               <a
                                 href={docLink}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="text-sm text-blue-600 hover:underline ml-2"
+                                className="text-blue-600 hover:underline"
                               >
-                                Learn more →
+                                {text}
                               </a>
+                            ) : (
+                              <span>{text}</span>
                             )}
                           </div>
                         </li>
@@ -1106,7 +1545,7 @@ export default function App() {
               >
                 <span className={`transition-transform ${expandedDetailsSection ? 'rotate-90' : ''}`}>
                   ▶
-                        </span>
+                </span>
                 <span>
                   Detailed Analysis
                   <span className="ml-2 text-base font-normal text-slate-500">
@@ -1183,6 +1622,9 @@ export default function App() {
                             {getSortIcon('issues')}
                           </div>
                         </th>
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700 w-48">
+                          Optimization Details
+                        </th>
                         <th className="text-center py-3 px-4 font-semibold text-slate-700 w-20"></th>
                       </tr>
                     </thead>
@@ -1240,6 +1682,64 @@ export default function App() {
                                   <span className="text-sm text-green-600">No issues</span>
                                 )}
                               </td>
+                              <td className="py-3 px-4">
+                                {(() => {
+                                  const details = assetDetails.get(asset.url);
+                                  if (!details) {
+                                    if (hasIssues) {
+                                      // Auto-load details for assets with issues
+                                      setTimeout(() => loadAssetDetails(asset), 0);
+                                    }
+                                    return <span className="text-xs text-slate-400">—</span>;
+                                  }
+                                  if (details.loading) {
+                                    return <span className="text-xs text-slate-400">Loading...</span>;
+                                  }
+                                  if (details.error) {
+                                    return <span className="text-xs text-red-500" title={details.error}>Error</span>;
+                                  }
+                                    if (details.contentLength) {
+                                      const savings = calculatePotentialSavings(asset, details);
+                                      if (savings) {
+                                        return (
+                                          <div className="text-xs space-y-1">
+                                            <div className="text-slate-600">
+                                              <span className="font-medium">Size:</span> {formatBytes(details.contentLength)}
+                                            </div>
+                                            <div className="text-blue-600">
+                                              <span className="font-medium">Est. Savings:</span> {formatBytes(savings.potentialSavings)} ({savings.savingsPercent}%)
+                                            </div>
+                                            <div className="text-green-600">
+                                              <span className="font-medium">Est. Optimized:</span> {formatBytes(savings.optimizedSize)}
+                                            </div>
+                                            <div className="text-slate-400 text-xs italic">
+                                              Based on average savings percentages
+                                            </div>
+                                            {details.contentType && (
+                                              <div className="text-slate-500 text-xs mt-1">
+                                                {transformContentType(details.contentType)}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      } else {
+                                        return (
+                                          <div className="text-xs space-y-1">
+                                            <div className="text-slate-600">
+                                              <span className="font-medium">Size:</span> {formatBytes(details.contentLength)}
+                                            </div>
+                                            {details.contentType && (
+                                              <div className="text-slate-500">
+                                                {transformContentType(details.contentType)}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+                                    }
+                                  return <span className="text-xs text-slate-400">—</span>;
+                                })()}
+                              </td>
                               <td className="py-3 px-4 text-center">
                                 {hasIssues && (
                                   <button
@@ -1257,29 +1757,88 @@ export default function App() {
                             </tr>
                             {isExpanded && hasIssues && (
                               <tr className="bg-slate-50">
-                                <td colSpan={4} className="py-3 px-4 pl-12">
-                                  <div className="space-y-2">
-                      {asset.issues.map((issue, issueIndex) => {
-                        const docLink = getIssueDocLink(issue);
-                        return (
-                                        <div key={issueIndex} className="flex items-start gap-2 text-sm text-slate-700">
-                                          <span className="text-red-500 mt-1">•</span>
-                                          <div className="flex-1">
-                                            <span>{issue}</span>
-                            {docLink && (
-                                <a
-                                  href={docLink}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                                className="text-blue-600 hover:underline ml-2"
-                                >
-                                                Learn more →
-                                </a>
-                            )}
+                                <td colSpan={analysis.isSitemapAnalysis ? 6 : 5} className="py-3 px-4 pl-12">
+                                  <div className="space-y-4">
+                                    {/* Issues List */}
+                                    <div className="space-y-2">
+                                      {asset.issues.map((issue, issueIndex) => {
+                                        const docLink = getIssueDocLink(issue);
+                                        return (
+                                          <div key={issueIndex} className="flex items-start gap-2 text-sm text-slate-700">
+                                            <span className="text-red-500 mt-1">•</span>
+                                            <div className="flex-1">
+                                              <span>{issue}</span>
+                                              {docLink && (
+                                                <a
+                                                  href={docLink}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="text-blue-600 hover:underline ml-2"
+                                                >
+                                                  Learn more →
+                                                </a>
+                                              )}
+                                            </div>
                                           </div>
-                                        </div>
-                        );
-                      })}
+                                        );
+                                      })}
+                                    </div>
+                                    
+                                    {/* Optimized URL */}
+                                    {(() => {
+                                      const optimizedUrl = buildOptimizedUrl(asset);
+                                      if (optimizedUrl) {
+                                        return (
+                                          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                                            <div className="text-sm font-semibold text-blue-900 mb-2">
+                                              Optimized URL:
+                                            </div>
+                                            <div className="flex items-start gap-2">
+                                              <code className="flex-1 text-xs text-blue-800 break-all font-mono bg-white p-2 rounded border border-blue-200">
+                                                {optimizedUrl}
+                                              </code>
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(optimizedUrl);
+                                                }}
+                                                className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 font-medium"
+                                                title="Copy to clipboard"
+                                              >
+                                                Copy
+                                              </button>
+                                              <a
+                                                href={optimizedUrl}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium"
+                                                title="Open in new tab"
+                                              >
+                                                Open
+                                              </a>
+                                            </div>
+                                            <div className="text-xs text-blue-700 mt-2">
+                                              This URL includes all recommended optimizations: {(() => {
+                                                const optimizations = [];
+                                                if (asset.issues.some(issue => issue.includes('f_auto'))) {
+                                                  optimizations.push('f_auto');
+                                                }
+                                                if (asset.issues.some(issue => issue.includes('q_auto'))) {
+                                                  optimizations.push('q_auto');
+                                                }
+                                                if (asset.issues.some(issue => issue.includes('resize') || issue.includes('w_, h_'))) {
+                                                  optimizations.push('w_1200, c_limit (resizing)');
+                                                } else if (asset.issues.some(issue => issue.includes('c_limit'))) {
+                                                  optimizations.push('c_limit');
+                                                }
+                                                return optimizations.join(', ');
+                                              })()}
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+                                      return null;
+                                    })()}
                                   </div>
                                 </td>
                               </tr>
@@ -1354,24 +1913,51 @@ export default function App() {
             {expandedNonCloudinarySection && (
               <div className="pt-4 border-t border-slate-200">
                 <p className="text-slate-600 mb-4">
-                  These images are not using Cloudinary. Consider migrating them to Cloudinary to leverage optimization, CDN delivery, and automatic format/quality optimization.
+                  These images are not using Cloudinary. Consider migrating them to Cloudinary to leverage optimization, CDN delivery, and automatic format/quality optimization. Estimated savings shown below are based on average optimization percentages (~40% total: 25% format, 15% quality, 10% resizing).
                 </p>
                 <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {analysis.nonCloudinaryImages.map((img, index) => (
-                    <div
-                      key={index}
-                      className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors"
-                    >
-                      <a
-                        href={img.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-700 break-all hover:underline font-mono text-sm"
+                  {analysis.nonCloudinaryImages.map((img, index) => {
+                    const details = assetDetails.get(img.url);
+                    const pseudoAsset = { url: img.url, issues: ['Migrate to Cloudinary'] };
+                    const savings = details && details.contentLength ? calculatePotentialSavings(pseudoAsset, details) : null;
+                    
+                    return (
+                      <div
+                        key={index}
+                        className="p-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors"
                       >
-                        {img.url}
-                      </a>
-                    </div>
-                  ))}
+                        <div className="flex items-start justify-between gap-4">
+                          <a
+                            href={img.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-700 break-all hover:underline font-mono text-sm flex-1"
+                          >
+                            {img.url}
+                          </a>
+                          {savings && (
+                            <div className="text-xs text-right whitespace-nowrap">
+                              <div className="text-slate-600">
+                                <span className="font-medium">Size:</span> {formatBytes(details.contentLength)}
+                              </div>
+                              <div className="text-blue-600">
+                                <span className="font-medium">Est. Savings:</span> {formatBytes(savings.potentialSavings)} ({savings.savingsPercent}%)
+                              </div>
+                              <div className="text-green-600">
+                                <span className="font-medium">Est. Optimized:</span> {formatBytes(savings.optimizedSize)}
+                              </div>
+                            </div>
+                          )}
+                          {details && details.loading && (
+                            <span className="text-xs text-slate-400">Loading...</span>
+                          )}
+                          {details && details.error && !details.loading && (
+                            <span className="text-xs text-slate-400">Unavailable</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
