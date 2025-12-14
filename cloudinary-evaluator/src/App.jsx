@@ -1613,6 +1613,34 @@ export default function App() {
               )}
             </p>
 
+            {/* Detailed Analysis Button */}
+            {analysis && analysis.perAsset?.length > 0 && (
+              <div className="mt-6">
+                <a
+                  href={realSavingsExample && !realSavingsExample.loading && !realSavingsExample.error ? "#real-savings-example" : "#detailed-analysis"}
+                  className="block w-full px-4 py-3 text-center text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    // Navigate to real savings example if it exists, otherwise to detailed analysis
+                    if (realSavingsExample && !realSavingsExample.loading && !realSavingsExample.error) {
+                      const element = document.getElementById('real-savings-example');
+                      if (element) {
+                        element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return;
+                      }
+                    }
+                    const element = document.getElementById('detailed-analysis');
+                    if (element) {
+                      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      setExpandedDetailsSection(true);
+                    }
+                  }}
+                >
+                  View Detailed Analysis ({analysis.perAsset.length} assets)
+                </a>
+              </div>
+            )}
+
             {totalBandwidthSavings && totalBandwidthSavings.totalSavings > 0 && (
               <div className="mt-6 p-4 bg-gradient-to-br from-green-50 to-blue-50 border border-green-200 rounded-xl">
                 <h3 className="font-semibold text-green-900 mb-2 mt-0">Estimated Potential Bandwidth Savings</h3>
@@ -1716,6 +1744,29 @@ export default function App() {
                 ) : null}
               </div>
             )}
+
+            {/* Scroll indicator - shows when there's analysis data */}
+            {analysis && (analysis.perAsset?.length > 0 || analysis.nonCloudinaryImages?.length > 0) && (
+              <div className="mt-6 pt-4 border-t border-blue-200">
+                <div className="flex flex-col items-center justify-center py-2">
+                  <div className="text-center mb-2">
+                    <p className="text-slate-600 font-medium text-sm mb-2">
+                      Scroll down for detailed analysis
+                    </p>
+                    <div className="flex flex-col items-center gap-1">
+                      <svg 
+                        className="w-6 h-6 text-blue-600 animate-bounce" 
+                        fill="none" 
+                        stroke="currentColor" 
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </aside>
       </main>
@@ -1738,7 +1789,7 @@ export default function App() {
       )}
 
       {realSavingsExample && !realSavingsExample.loading && !realSavingsExample.error && (
-        <section className="max-w-6xl mx-auto px-6">
+        <section id="real-savings-example" className="max-w-6xl mx-auto px-6">
           <div className="mt-6 p-6 bg-gradient-to-br from-blue-50 to-purple-50 border border-blue-200 rounded-3xl shadow">
             <h2 className="text-2xl font-semibold text-blue-900 mb-4">Real Savings Example</h2>
             <div className="grid md:grid-cols-2 gap-6">
@@ -1800,7 +1851,7 @@ export default function App() {
 
       {analysis && analysis.perAsset && analysis.perAsset.length > 0 && (
         <section id="detailed-analysis" className="max-w-6xl mx-auto px-6">
-              <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
+              <div className="mt-8 p-6 bg-gradient-to-br from-white to-blue-50 rounded-3xl shadow-lg border-2 border-blue-200">
             <div className="flex items-center justify-between mb-4">
               <button
                 type="button"
@@ -2132,7 +2183,7 @@ export default function App() {
 
       {analysis && analysis.nonCloudinaryImages && analysis.nonCloudinaryImages.length > 0 && (
         <section id="non-cloudinary-images" className="max-w-6xl mx-auto px-6">
-          <div className="mt-6 p-6 bg-white rounded-3xl shadow border border-slate-200">
+          <div className="mt-8 p-6 bg-gradient-to-br from-white to-slate-50 rounded-3xl shadow-lg border-2 border-slate-300">
             <div className="flex items-center justify-between mb-4">
               <button
                 type="button"
