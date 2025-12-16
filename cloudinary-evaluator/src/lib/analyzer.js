@@ -88,26 +88,48 @@ function parseCloudinaryUrl(url) {
   const segments = parsed.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
   if (segments.length < 2) return null;
 
+  // Helper to normalize resource type (handle "images" as "image")
+  const normalizeResourceType = (type) => {
+    if (type === "images") return "image";
+    return type;
+  };
+
   // First, try standard Cloudinary URL structure
   let idx = 0;
   let resourceType = segments[idx];
   let cloudName = "";
 
-  if (!RESOURCE_TYPES.has(resourceType)) {
+  if (!RESOURCE_TYPES.has(resourceType) && normalizeResourceType(resourceType) !== "image") {
     cloudName = resourceType;
     idx += 1;
     resourceType = segments[idx];
   }
 
-  if (RESOURCE_TYPES.has(resourceType)) {
+  // Normalize resource type (images -> image)
+  const normalizedResourceType = normalizeResourceType(resourceType);
+  
+  if (RESOURCE_TYPES.has(normalizedResourceType) || resourceType === "images") {
     const deliveryType = segments[idx + 1];
-    if (DELIVERY_TYPES.has(deliveryType)) {
-      // Standard Cloudinary URL structure detected
-      const remainderSegments = segments.slice(idx + 2);
+    let remainderStartIdx = idx + 2;
+    
+    // Handle case where delivery type is missing (default to "upload")
+    if (!DELIVERY_TYPES.has(deliveryType)) {
+      // If the next segment looks like transformations, assume delivery type is "upload"
+      if (hasCloudinaryTransformations(deliveryType) || deliveryType === undefined) {
+        remainderStartIdx = idx + 1;
+      } else {
+        // Not a standard structure, try fallback
+        remainderStartIdx = -1;
+      }
+    }
+    
+    if (remainderStartIdx > 0) {
+      // Standard Cloudinary URL structure detected (with or without explicit delivery type)
+      const remainderSegments = segments.slice(remainderStartIdx);
       if (!remainderSegments.length) return null;
 
       // For raw files, transformations are less common, so handle differently
-      const isRawFile = resourceType === "raw";
+      const isRawFile = normalizedResourceType === "raw";
       
       const transformationSegments = [];
       let stopIndex = remainderSegments.length;
@@ -160,8 +182,8 @@ function parseCloudinaryUrl(url) {
 
       return {
         cloudName: cloudName || parsed.hostname,
-        resourceType,
-        deliveryType,
+        resourceType: normalizedResourceType,
+        deliveryType: DELIVERY_TYPES.has(deliveryType) ? deliveryType : "upload",
         publicId,
         transformations: rawTransformations,
         txSet,
@@ -174,12 +196,15 @@ function parseCloudinaryUrl(url) {
   let foundResourceType = null;
   let foundDeliveryType = null;
   let cloudNameIdx = -1;
+  let foundResourceTypeIdx = -1;
   
   for (let i = 0; i < segments.length - 1; i++) {
-    if (RESOURCE_TYPES.has(segments[i])) {
+    const normalizedSeg = normalizeResourceType(segments[i]);
+    if (RESOURCE_TYPES.has(normalizedSeg) || segments[i] === "images") {
       if (DELIVERY_TYPES.has(segments[i + 1])) {
-        foundResourceType = segments[i];
+        foundResourceType = normalizedSeg;
         foundDeliveryType = segments[i + 1];
+        foundResourceTypeIdx = i;
         cloudNameIdx = i > 0 ? i - 1 : -1;
         break;
       }
@@ -187,8 +212,8 @@ function parseCloudinaryUrl(url) {
   }
   
   // If we found explicit structure, parse it
-  if (foundResourceType && foundDeliveryType) {
-    const resourceTypeIdx = segments.indexOf(foundResourceType);
+  if (foundResourceType && foundDeliveryType && foundResourceTypeIdx >= 0) {
+    const resourceTypeIdx = foundResourceTypeIdx;
     const deliveryTypeIdx = resourceTypeIdx + 1;
     const remainderSegments = segments.slice(deliveryTypeIdx + 1);
     
