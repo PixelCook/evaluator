@@ -145,8 +145,15 @@ function parseCloudinaryUrl(url) {
         }
       }
 
-      const rawTransformations = transformationSegments.join("/");
-      const txSet = new Set(rawTransformations.split(",").filter(Boolean));
+      // Collect all transformations from all segments
+      // Each segment may contain comma-separated transformations
+      const allTransformations = [];
+      for (const segment of transformationSegments) {
+        const segmentTx = segment.split(",").map(t => t.trim()).filter(Boolean);
+        allTransformations.push(...segmentTx);
+      }
+      const rawTransformations = allTransformations.join(",");
+      const txSet = new Set(allTransformations);
       const publicId = isRawFile && transformationSegments.length === 0 
         ? remainderSegments.join("/") 
         : remainderSegments.slice(stopIndex).join("/");
@@ -216,8 +223,15 @@ function parseCloudinaryUrl(url) {
       }
     }
     
-    const rawTransformations = transformationSegments.join("/");
-    const txSet = new Set(rawTransformations.split(",").filter(Boolean));
+    // Collect all transformations from all segments
+    // Each segment may contain comma-separated transformations
+    const allTransformations = [];
+    for (const segment of transformationSegments) {
+      const segmentTx = segment.split(",").map(t => t.trim()).filter(Boolean);
+      allTransformations.push(...segmentTx);
+    }
+    const rawTransformations = allTransformations.join(",");
+    const txSet = new Set(allTransformations);
     const publicId = isRawFile && transformationSegments.length === 0 
       ? remainderSegments.join("/") 
       : remainderSegments.slice(stopIndex).join("/");
@@ -323,12 +337,19 @@ export function finalizeAnalysis(result) {
       const hasWidth = [...cld.txSet].some(t => t.startsWith("w_"));
       const hasHeight = [...cld.txSet].some(t => t.startsWith("h_"));
       const hasCLimit = cld.txSet.has("c_limit");
+      // Check for other crop modes that also constrain dimensions (c_fill, c_crop, c_scale, c_pad, etc.)
+      const hasCropMode = [...cld.txSet].some(t => 
+        t.startsWith("c_") && 
+        (t === "c_limit" || t === "c_fill" || t === "c_crop" || t === "c_scale" || 
+         t === "c_pad" || t === "c_lfill" || t === "c_mfit" || t === "c_mpad" || 
+         t === "c_thumb" || t.startsWith("c_imagga_"))
+      );
       
       // If no width or height transformations are present, suggest resizing with c_limit
       if (!hasWidth && !hasHeight) {
         issues.push("Add w_, h_, and c_limit transformations to resize images and prevent oversized assets.");
-      } else if (!hasCLimit && (hasWidth || hasHeight)) {
-        // If they have width/height but no c_limit, suggest adding it as a safety measure
+      } else if (!hasCropMode && (hasWidth || hasHeight)) {
+        // If they have width/height but no crop mode that constrains dimensions, suggest adding c_limit as a safety measure
         issues.push("Add c_limit to prevent serving images larger than requested dimensions.");
       }
     }
