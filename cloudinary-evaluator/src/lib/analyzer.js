@@ -342,14 +342,22 @@ function hasCloudinaryResponseHeaders(response = {}) {
   return false;
 }
 
+function isSvgFile(publicId, url) {
+  if (!publicId && !url) return false;
+  const checkString = (publicId || url || "").toLowerCase();
+  return /\.svg(\?|$)/i.test(checkString);
+}
+
 export function finalizeAnalysis(result) {
   const perAsset = result.cloudinaryRequests.map(entry => {
     const cld = entry.cld || { txSet: new Set() };
     const issues = [];
     const isRawFile = cld.resourceType === "raw";
+    const isSvg = isSvgFile(cld.publicId, entry.url);
     
-    // Skip f_auto, q_auto, and resizing suggestions for raw files
-    if (!isRawFile) {
+    // Skip f_auto, q_auto, and resizing suggestions for raw files and SVGs
+    // SVGs are vector graphics that maintain quality at any size without impacting filesize
+    if (!isRawFile && !isSvg) {
       if (!cld.txSet.has("f_auto")) {
         issues.push("Enable f_auto to serve modern formats automatically.");
       }
@@ -361,21 +369,14 @@ export function finalizeAnalysis(result) {
       // Check for resizing transformations
       const hasWidth = [...cld.txSet].some(t => t.startsWith("w_"));
       const hasHeight = [...cld.txSet].some(t => t.startsWith("h_"));
-      const hasCLimit = cld.txSet.has("c_limit");
-      // Check for other crop modes that also constrain dimensions (c_fill, c_crop, c_scale, c_pad, etc.)
-      const hasCropMode = [...cld.txSet].some(t => 
-        t.startsWith("c_") && 
-        (t === "c_limit" || t === "c_fill" || t === "c_crop" || t === "c_scale" || 
-         t === "c_pad" || t === "c_lfill" || t === "c_mfit" || t === "c_mpad" || 
-         t === "c_thumb" || t.startsWith("c_imagga_"))
-      );
+      // Check for any crop mode (c_scale is the default when w_/h_ are present without a c_ parameter)
+      const hasCropMode = [...cld.txSet].some(t => t.startsWith("c_"));
       
-      // If no width or height transformations are present, suggest resizing with c_limit
+      // Only suggest resizing if there are no width/height transformations at all
+      // Don't suggest c_limit if they already have width/height (they're using c_scale by default, which is fine)
+      // Don't suggest changing existing crop modes to c_limit (crop modes are intentional design choices)
       if (!hasWidth && !hasHeight) {
         issues.push("Add w_, h_, and c_limit transformations to resize images and prevent oversized assets.");
-      } else if (!hasCropMode && (hasWidth || hasHeight)) {
-        // If they have width/height but no crop mode that constrains dimensions, suggest adding c_limit as a safety measure
-        issues.push("Add c_limit to prevent serving images larger than requested dimensions.");
       }
     }
     
@@ -390,8 +391,12 @@ export function finalizeAnalysis(result) {
   const total = perAsset.length;
   const suggestions = new Set();
 
-  // Only count image/video assets for f_auto and q_auto suggestions (exclude raw files)
-  const imageVideoAssets = perAsset.filter(a => a.cld.resourceType !== "raw");
+  // Only count image/video assets for f_auto and q_auto suggestions (exclude raw files and SVGs)
+  const imageVideoAssets = perAsset.filter(a => {
+    const isRaw = a.cld.resourceType === "raw";
+    const isSvg = isSvgFile(a.cld.publicId, a.url);
+    return !isRaw && !isSvg;
+  });
   const imageVideoCount = imageVideoAssets.length;
   
   const autoFormatCount = imageVideoAssets.filter(a => a.cld.txSet.has("f_auto")).length;
@@ -410,11 +415,13 @@ export function finalizeAnalysis(result) {
     suggestions.add("Migrate non-Cloudinary images to leverage optimization & CDN.");
   }
 
-  // Check for assets without resizing transformations or c_limit (exclude raw files)
+  // Check for assets without resizing transformations (exclude raw files and SVGs)
+  // Only suggest resizing when there are no width/height parameters at all
   const assetsNeedingSizing = perAsset.filter(a => {
-    return a.cld.resourceType !== "raw" && a.issues.some(issue => 
-      issue.includes("w_, h_, and c_limit") || 
-      issue.includes("c_limit")
+    const isRaw = a.cld.resourceType === "raw";
+    const isSvg = isSvgFile(a.cld.publicId, a.url);
+    return !isRaw && !isSvg && a.issues.some(issue => 
+      issue.includes("w_, h_, and c_limit")
     );
   });
   
@@ -440,7 +447,12 @@ export function finalizeAnalysis(result) {
   const nonCloudinaryAssets = result.nonCloudinaryImages.length;
   
   // Count optimized Cloudinary assets (both f_auto and q_auto)
+  // Exclude raw files and SVGs from optimization scoring
   const optimizedAssets = perAsset.filter(a => {
+    const isRaw = a.cld.resourceType === "raw";
+    const isSvg = isSvgFile(a.cld.publicId, a.url);
+    // For SVGs and raw files, consider them "optimized" since they don't need f_auto/q_auto
+    if (isRaw || isSvg) return true;
     const hasFAuto = a.cld.txSet.has("f_auto");
     const hasQAuto = a.cld.txSet.has("q_auto") || [...a.cld.txSet].some(t => t.startsWith("q_auto:"));
     return hasFAuto && hasQAuto;

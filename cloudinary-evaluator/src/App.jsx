@@ -727,22 +727,18 @@ export default function App() {
       const needsFAuto = issues.some(issue => issue.includes('f_auto'));
       const needsQAuto = issues.some(issue => issue.includes('q_auto'));
       const needsResize = issues.some(issue => issue.includes('resize') || issue.includes('w_, h_'));
-      const needsCLimit = issues.some(issue => issue.includes('c_limit'));
       
       // Build optimized transformations
       const optimizedTx = [...existingTx];
       
       // Add resizing if needed (width/height with c_limit)
+      // Only add when there are no existing width/height parameters
       const hasWidth = existingWidth !== null;
       const hasHeight = existingHeight !== null;
       
       if (needsResize && (!hasWidth && !hasHeight)) {
         optimizedTx.push('w_1200');
         optimizedTx.push('c_limit');
-      } else if (hasWidth || hasHeight) {
-        if (needsCLimit && !txSet.has('c_limit')) {
-          optimizedTx.push('c_limit');
-        }
       }
       
       if (needsFAuto && !txSet.has('f_auto')) {
@@ -812,12 +808,12 @@ export default function App() {
       const needsFAuto = issues.some(issue => issue.includes('f_auto'));
       const needsQAuto = issues.some(issue => issue.includes('q_auto'));
       const needsResize = issues.some(issue => issue.includes('resize') || issue.includes('w_, h_'));
-      const needsCLimit = issues.some(issue => issue.includes('c_limit'));
       
       // Build optimized transformations
       const optimizedTx = [...existingTx];
       
       // Add resizing if needed (width/height with c_limit)
+      // Only add when there are no existing width/height parameters
       const hasWidth = existingWidth !== null;
       const hasHeight = existingHeight !== null;
       
@@ -826,11 +822,6 @@ export default function App() {
         // Use 1200px width as a reasonable desktop display size
         optimizedTx.push('w_1200');
         optimizedTx.push('c_limit');
-      } else if (hasWidth || hasHeight) {
-        // If width/height exist, ensure c_limit is present
-        if (needsCLimit && !txSet.has('c_limit')) {
-          optimizedTx.push('c_limit');
-        }
       }
       
       if (needsFAuto && !txSet.has('f_auto')) {
