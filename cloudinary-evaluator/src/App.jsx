@@ -17,8 +17,8 @@ export default function App() {
   const [expandedDetailsSection, setExpandedDetailsSection] = useState(false);
   const [expandedNonCloudinarySection, setExpandedNonCloudinarySection] = useState(false);
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [sortColumn, setSortColumn] = useState(null);
-  const [sortDirection, setSortDirection] = useState('asc'); // 'asc' or 'desc'
+  const [sortColumn, setSortColumn] = useState('issues'); // Default to sorting by issues
+  const [sortDirection, setSortDirection] = useState('desc'); // Default to descending (problems first)
   const [sitemapProgress, setSitemapProgress] = useState({ current: 0, total: 0, totalPages: 0, completed: [], failed: [] });
   const [sitemapCancelToken, setSitemapCancelToken] = useState(null);
   const [useSitemap, setUseSitemap] = useState(false);
@@ -382,12 +382,15 @@ export default function App() {
 
   const sortedAssets = useMemo(() => {
     if (!analysis?.perAsset) return [];
-    if (!sortColumn) return analysis.perAsset;
+    
+    // Default to sorting by issues (descending) if no sort column is set
+    const effectiveSortColumn = sortColumn || 'issues';
+    const effectiveSortDirection = sortColumn ? sortDirection : 'desc';
 
     const sorted = [...analysis.perAsset].sort((a, b) => {
       let aValue, bValue;
 
-      switch (sortColumn) {
+      switch (effectiveSortColumn) {
         case 'url':
           aValue = a.url.toLowerCase();
           bValue = b.url.toLowerCase();
@@ -409,8 +412,8 @@ export default function App() {
           return 0;
       }
 
-      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      if (aValue < bValue) return effectiveSortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return effectiveSortDirection === 'asc' ? 1 : -1;
       return 0;
     });
 
@@ -1205,8 +1208,8 @@ export default function App() {
     setExpandedDetailsSection(false);
     setExpandedNonCloudinarySection(false);
     setExpandedRows(new Set());
-    setSortColumn(null);
-    setSortDirection('asc');
+    setSortColumn('issues'); // Reset to default: sort by issues
+    setSortDirection('desc'); // Reset to default: problems first
   }
 
   function exportUrls(urls, filename) {
